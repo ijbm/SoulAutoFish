@@ -40,6 +40,10 @@ var AF = {
         reactMax: 180,
         recastTimeout: 18000,   // 无咬钩超时重抛 ms
         catchDelay: [700, 1400],
+        strikeGap: [180, 350],     // 刺鱼后到长按的间隔
+        holdMs: [2600, 3400],      // 长按收杆时长
+        biteWindow: [4000, 9000],  // 定时模式: 抛竿后预计咬钩窗口
+        timedMode: true,           // 定时兜底（无信号也按窗口刺鱼）
         castPos: [0.5, 0.86],   // 归一化抛竿点
         reelPos: [0.5, 0.5],    // 归一化收杆点
         biteSoundRe: /(bite|fish|hook|catch|zhongyu|shanggou|yaogou|diaoyu|hit)/i
@@ -62,42 +66,80 @@ function gameTarget() {
     }
     return best || document.body;
 }
+function makeTouch(el, x, y) {
+    try {
+        // pageX/pageY 必须显式设置 — Touch 构造器默认 0
+        return new Touch({ identifier: 1, target: el, clientX: x, clientY: y,
+                           pageX: x, pageY: y, screenX: x, screenY: y,
+                           radiusX: 2, radiusY: 2, rotationAngle: 0, force: 1 });
+    } catch (e) { return null; }
+}
+function evBase(x, y) {
+    return { bubbles: true, cancelable: true, view: window,
+             clientX: x, clientY: y, screenX: x, screenY: y,
+             pageX: x, pageY: y, button: 0 };
+}
+function fire(el, ev) { try { el.dispatchEvent(ev); } catch (e) {} }
+function dispatchStart(el, x, y, touch) {
+    var base = evBase(x, y);
+    if (touch) {
+        try {
+            fire(el, new TouchEvent('touchstart', Object.assign({}, base,
+                { touches: [touch], targetTouches: [touch], changedTouches: [touch] })));
+        } catch (e) {}
+    }
+    try {
+        fire(el, new PointerEvent('pointerdown', Object.assign(
+            { pointerId: 1, pointerType: 'touch', isPrimary: true }, base)));
+    } catch (e) {}
+    fire(el, new MouseEvent('mousedown', base));
+}
+function dispatchMove(el, x, y, touch) {
+    var base = evBase(x, y);
+    if (touch) {
+        try {
+            fire(el, new TouchEvent('touchmove', Object.assign({}, base,
+                { touches: [touch], targetTouches: [touch], changedTouches: [touch] })));
+        } catch (e) {}
+    }
+    try {
+        fire(el, new PointerEvent('pointermove', Object.assign(
+            { pointerId: 1, pointerType: 'touch', isPrimary: true }, base)));
+    } catch (e) {}
+    fire(el, new MouseEvent('mousemove', base));
+}
+function dispatchEnd(el, x, y, touch) {
+    var base = evBase(x, y);
+    if (touch) {
+        try {
+            fire(el, new TouchEvent('touchend', Object.assign({}, base,
+                { touches: [], targetTouches: [], changedTouches: [touch] })));
+        } catch (e) {}
+    }
+    try {
+        fire(el, new PointerEvent('pointerup', Object.assign(
+            { pointerId: 1, pointerType: 'touch', isPrimary: true }, base)));
+    } catch (e) {}
+    fire(el, new MouseEvent('mouseup', base));
+    fire(el, new MouseEvent('click', base));
+}
 function tapNorm(nx, ny) {
     var el = gameTarget();
     var r = el.getBoundingClientRect();
-    var x = r.left + nx * r.width;
-    var y = r.top + ny * r.height;
-    var touch = null;
-    try {
-        // 关键: pageX/pageY 必须显式设置 — Touch 构造器默认 0，
-        // canvas 引擎读 touches[0].pageX/pageY → v10 全落在 (0,0)
-        touch = new Touch({ identifier: 1, target: el, clientX: x, clientY: y,
-                            pageX: x, pageY: y, screenX: x, screenY: y,
-                            radiusX: 2, radiusY: 2, rotationAngle: 0, force: 1 });
-    } catch (e) {}
-    var base = { bubbles: true, cancelable: true, view: window,
-                 clientX: x, clientY: y, screenX: x, screenY: y,
-                 pageX: x, pageY: y, button: 0 };
-    var evts = [];
-    try {
-        var t0 = touch ? { touches: [touch], targetTouches: [touch], changedTouches: [touch] }
-                       : { touches: [], targetTouches: [], changedTouches: [] };
-        evts.push(new TouchEvent('touchstart', Object.assign({}, base, t0)));
-        evts.push(new TouchEvent('touchend', Object.assign({}, base,
-            { touches: [], targetTouches: [], changedTouches: touch ? [touch] : [] })));
-    } catch (e) {}
-    try {
-        evts.push(new PointerEvent('pointerdown', Object.assign(
-            { pointerId: 1, pointerType: 'touch', isPrimary: true }, base)));
-        evts.push(new PointerEvent('pointerup', Object.assign(
-            { pointerId: 1, pointerType: 'touch', isPrimary: true }, base)));
-    } catch (e) {}
-    evts.push(new MouseEvent('mousedown', base));
-    evts.push(new MouseEvent('mouseup', base));
-    evts.push(new MouseEvent('click', base));
-    for (var i = 0; i < evts.length; i++) {
-        try { el.dispatchEvent(evts[i]); } catch (e) {}
-    }
+    var x = r.left + nx * r.width, y = r.top + ny * r.height;
+    var t = makeTouch(el, x, y);
+    dispatchStart(el, x, y, t);
+    dispatchEnd(el, x, y, t);
+}
+// 长按: 按住 holdMs（中途一次 touchmove 防静止判定）
+function holdNorm(nx, ny, holdMs) {
+    var el = gameTarget();
+    var r = el.getBoundingClientRect();
+    var x = r.left + nx * r.width, y = r.top + ny * r.height;
+    var t = makeTouch(el, x, y);
+    dispatchStart(el, x, y, t);
+    setTimeout(function () { dispatchMove(el, x + 1, y + 1, t); }, Math.round(holdMs * 0.4));
+    setTimeout(function () { dispatchEnd(el, x, y, t); }, holdMs);
 }
 
 // ---------------- 信号源 ----------------
@@ -234,25 +276,31 @@ function onServerMsg(data) {
 })();
 
 // ---------------- 状态机 ----------------
-function onBite(src) {
+AF.onBite = function (src) {
     if (!AF.running || AF.state !== 'waiting') return;
     var now = Date.now();
     if (now - AF.biteCooldown < 400) return;
     AF.biteCooldown = now;
     AF.state = 'reeling';
     AF.stats.bites++;
-    log('咬钩信号: ' + src);
+    log('咬钩(' + src + ')→刺鱼');
     report();
+    var react = rand(AF.cfg.reactMin, AF.cfg.reactMax);
     setTimeout(function () {
-        tapNorm(AF.cfg.reelPos[0], AF.cfg.reelPos[1]);   // 收杆
+        tapNorm(AF.cfg.reelPos[0], AF.cfg.reelPos[1]); // 刺鱼（点按）
         setTimeout(function () {
-            tapNorm(AF.cfg.reelPos[0], AF.cfg.reelPos[1]); // 关结算页
-            AF.stats.catches++;
-            AF.state = 'idle';
-            report();
-        }, rand(AF.cfg.catchDelay[0], AF.cfg.catchDelay[1]));
-    }, rand(AF.cfg.reactMin, AF.cfg.reactMax));
-}
+            var hold = rand(AF.cfg.holdMs[0], AF.cfg.holdMs[1]);
+            log('长按收杆 ' + Math.round(hold) + 'ms');
+            holdNorm(AF.cfg.reelPos[0], AF.cfg.reelPos[1], hold); // 长按收杆
+            setTimeout(function () {
+                tapNorm(AF.cfg.reelPos[0], AF.cfg.reelPos[1]); // 关结算
+                AF.stats.catches++;
+                AF.state = 'idle';
+                report();
+            }, hold + rand(AF.cfg.catchDelay[0], AF.cfg.catchDelay[1]));
+        }, rand(AF.cfg.strikeGap[0], AF.cfg.strikeGap[1]));
+    }, react);
+};
 
 AF.onSound = function (idOrUrl) {
     var s = String(idOrUrl || '');
@@ -268,14 +316,21 @@ async function mainLoop() {
             if (!AF.running) break;
             AF.state = 'waiting';
             AF.lastCast = Date.now();
+            AF.biteAt = rand(AF.cfg.biteWindow[0], AF.cfg.biteWindow[1]);
             AF.stats.casts++;
             var el = gameTarget();
             tapNorm(AF.cfg.castPos[0], AF.cfg.castPos[1]);
             log('抛竿→' + (el.tagName || '?') + ' ' + Math.round(AF.cfg.castPos[0] * 100) + '%,' + Math.round(AF.cfg.castPos[1] * 100) + '%');
             report();
-        } else if (AF.state === 'waiting' && Date.now() - AF.lastCast > AF.cfg.recastTimeout) {
-            AF.state = 'idle';
-            log('超时重抛');
+        } else if (AF.state === 'waiting') {
+            var waited = Date.now() - AF.lastCast;
+            // 定时兜底: 信号没来但窗口到了 → 当作咬钩（真实信号提前触发，互不冲突）
+            if (AF.cfg.timedMode && waited > AF.biteAt) {
+                onBite('timer');
+            } else if (waited > AF.cfg.recastTimeout) {
+                AF.state = 'idle';
+                log('超时重抛');
+            }
         }
         await sleep(200);
     }
