@@ -178,7 +178,7 @@ static void h_pageDidFinishNav(id self, SEL _cmd, WKWebView *wv, id nav) {
 
 #pragma mark - WKWebView 全局捕获（终极兜底：三个容器 hook 都没抓到钓鱼游戏）
 
-static void (*orig_wkInit)(id, SEL, CGRect, id);
+static id (*orig_wkInit)(id, SEL, CGRect, id);
 static id h_wkInit(id self, SEL _cmd, CGRect frame, id config) {
     id result = orig_wkInit ? orig_wkInit(self, _cmd, frame, config) : nil;
     @try {
@@ -193,7 +193,7 @@ static id h_wkInit(id self, SEL _cmd, CGRect frame, id config) {
     return result;
 }
 
-static void (*orig_wkLoadReq)(id, SEL, id);
+static id (*orig_wkLoadReq)(id, SEL, id);
 static id h_wkLoadReq(id self, SEL _cmd, id req) {
     id result = orig_wkLoadReq ? orig_wkLoadReq(self, _cmd, req) : nil;
     @try {
