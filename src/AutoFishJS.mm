@@ -47,7 +47,9 @@ var AF = {
         reactMax: 180,
         strikeWait: 3000,       // 刺鱼后等上钩确认超时
         strikeGap: [180, 350],  // 刺鱼→长按间隔
-        reelMaxMs: 90000,       // 长按上限（协议 f4/83 提前释放）
+        reelMaxMs: 90000,       // 收杆总上限（协议 f4/83 提前结束）
+        reelHold: [1200, 1800], // 脉冲收杆: 按住时长
+        reelRest: [400, 800],   // 脉冲收杆: 松开时长（一直按住会跑鱼）
         recastTimeout: 25000,   // 无咬钩重抛
         catchDelay: [700, 1400],
         castPos: [0.5, 0.86],
@@ -165,9 +167,18 @@ function onFishFrame(name) {
     }
 }
 function onReelDone() {
-    if (AF.state === 'reeling' && AF.releaseHold) {
+    if (AF.state === 'reeling') {
         log('收杆完成(协议)');
-        AF.releaseHold();
+        finishReel();
+    }
+}
+function onFishEscape() {
+    if (AF.state === 'reeling') {
+        log('鱼跑了(协议)');
+        finishReel();
+    } else if (AF.state === 'striking' || AF.state === 'waiting') {
+        AF.state = 'idle';
+        log('鱼跑了，重抛');
     }
 }
 
@@ -195,16 +206,42 @@ function onBite(src) {
 }
 function startReel() {
     AF.state = 'reeling';
-    log('长按收杆(协议释放, 最长' + Math.round(AF.cfg.reelMaxMs / 1000) + 's)');
-    holdNorm(AF.cfg.reelPos[0], AF.cfg.reelPos[1], AF.cfg.reelMaxMs, function () {
-        setTimeout(function () {
-            tapNorm(AF.cfg.reelPos[0], AF.cfg.reelPos[1]); // 关结算
-            AF.hooked = false;
-            AF.state = 'idle';
-            report();
-        }, rand(AF.cfg.catchDelay[0], AF.cfg.catchDelay[1]));
-    });
+    log('脉冲收杆(协议释放, 最长' + Math.round(AF.cfg.reelMaxMs / 1000) + 's)');
+    var el = null, x = 0, y = 0, t = null, holding = false, stopped = false;
+    var press = function () {
+        if (stopped || AF.state !== 'reeling') return;
+        el = gameTarget();
+        var r = el.getBoundingClientRect();
+        x = r.left + AF.cfg.reelPos[0] * r.width;
+        y = r.top + AF.cfg.reelPos[1] * r.height;
+        t = makeTouch(el, x, y);
+        dispatchStart(el, x, y, t);
+        holding = true;
+        setTimeout(release, rand(AF.cfg.reelHold[0], AF.cfg.reelHold[1]));
+    };
+    var release = function () {
+        if (stopped || AF.state !== 'reeling') return;
+        if (holding) { dispatchEnd(el, x, y, t); holding = false; }
+        setTimeout(press, rand(AF.cfg.reelRest[0], AF.cfg.reelRest[1]));
+    };
+    AF.releaseHold = function () {
+        if (stopped) return;
+        stopped = true;
+        if (holding) { dispatchEnd(el, x, y, t); holding = false; }
+        AF.releaseHold = null;
+    };
+    press();
+    setTimeout(function () { if (AF.releaseHold) AF.releaseHold(); }, AF.cfg.reelMaxMs);
     report();
+}
+function finishReel() {
+    if (AF.releaseHold) AF.releaseHold();
+    setTimeout(function () {
+        tapNorm(AF.cfg.reelPos[0], AF.cfg.reelPos[1]); // 关结算/清屏
+        AF.hooked = false;
+        AF.state = 'idle';
+        report();
+    }, rand(AF.cfg.catchDelay[0], AF.cfg.catchDelay[1]));
 }
 
 async function mainLoop() {
@@ -266,10 +303,12 @@ function onServerMsg(data) {
             for (var i = 0; i < Math.min(arr.length, 60); i++) hex += ('0' + arr[i].toString(16)).slice(-2);
             if (wsLogCount < 150) { wsLogCount++; log('WS<hex' + arr.length + ':' + hex + '>'); }
             // ---- 精确协议匹配（实测） ----
-            if (hex.indexOf('736f756c0100000000000000f400000054') === 0) {
-                onBite('proto');            // 鱼咬
-            } else if (hex.indexOf('736f756c0100000000000000f400000083') === 0) {
-                onReelDone();               // 收杆完成 → 松手
+            if (hex.indexOf('736f756c0100000000000000f400000083') === 0) {
+                onReelDone();               // 收杆完成 → 结束脉冲
+            } else if (hex.indexOf('736f756c0100000000000000f4') === 0) {
+                onBite('proto');            // 鱼咬 (f4/54, f4/56 变体)
+            } else if (hex.indexOf('736f756c000000000000007a') === 0) {
+                onFishEscape();             // 鱼跑了 → 恢复重抛
             } else if (hex.indexOf('736f756c00000000000000ca') === 0) {
                 AF.stats.catches++;         // 收入鱼塘
                 report();
