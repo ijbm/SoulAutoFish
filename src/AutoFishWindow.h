@@ -18,6 +18,7 @@ NSString *AFJSEscape(NSString *s);
 
 - (void)show;
 - (void)attachWebView:(WKWebView *)wv;
+- (void)attachGameWebView:(WKWebView *)wv;
 - (void)startEngine;
 - (void)stopEngine;
 - (void)evalJS:(NSString *)js;
