@@ -190,6 +190,8 @@ static void h_didExpand(id self, SEL _cmd, id view) {
 
 __attribute__((constructor)) static void SoulAutoFishEntry(void) {
     @autoreleasepool {
+        AFInstallCrashCapture(); // 崩溃捕获最先装
+
         int n = 0;
 
         Class applets = NSClassFromString(@"SOCPAppletsModule");
