@@ -1,7 +1,12 @@
 // AutoFishWindow.h
-// 悬浮控制窗：启动/停止/校准/设置 + 实时统计 + JS 回调
+// 悬浮控制窗：启动/停止/校准/设置 + 实时统计 + JS 回调 + 崩溃捕获
 #import <UIKit/UIKit.h>
 #import <WebKit/WebKit.h>
+
+/// 安装未捕获异常记录器（崩溃原因写入 Documents/SoulAutoFish_log.txt）
+void AFInstallCrashCapture(void);
+/// 追加一行到日志文件
+void AFWriteLogLine(NSString *s);
 
 /// 生成调用 JS 引擎的语句: window.__autoFish.cmd('name', {json})
 NSString *AFMakeJSCmd(NSString *name, NSDictionary *arg);
