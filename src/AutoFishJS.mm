@@ -1,12 +1,12 @@
 // AutoFishJS.mm
-// 注入到游戏 WKWebView 的自动化引擎：
-//   - WebSocket 流量监听（游戏协议信号）
-//   - MutationObserver（DOM 游戏的咬钩提示）
-//   - CFGame 桥观察（gameStateChange）
-//   - 合成触摸引擎（touch/pointer/mouse 三套事件全发）
-//   - 状态机: 抛竿 → 等待咬钩(声音/WS/DOM 三信号) → 收杆 → 结算 → 循环
-//   - 校准模式：手动点两个位置记录抛竿/收杆坐标
-//   - 统计上报: webkit.messageHandlers.AutoFishCtl
+// 注入到游戏 WKWebView 的自动化引擎 v15（全协议驱动）
+//   实测协议 (wss://prod-soul-connexus.soulapp.cn/connexus, soul 魔数二进制帧):
+//     soul+00+b0        抛竿确认
+//     soul+01+f4+54     鱼咬          ← 刺鱼触发
+//     文本帧 FOLD_FISH   上钩确认+鱼名  ← 开始长按
+//     soul+01+f4+83     收杆完成       ← 松手
+//     soul+00+ca        收入鱼塘       ← 渔获计数
+//     {"c":0,...}       心跳确认(每3s) ← 不是咬钩!
 #import "AutoFishJS.h"
 
 @implementation AutoFishJS
@@ -25,38 +25,40 @@ function post(o) {
 }
 function rand(a, b) { return a + Math.random() * (b - a); }
 function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
-
-var AF = {
-    running: false,
-    state: 'idle',
-    lastCast: 0,
-    biteCooldown: 0,
-    calib: null,
-    stats: { casts: 0, catches: 0, bites: 0 },
-    cfg: {
-        castMin: 2200,          // 抛竿后最短等待 ms
-        castMax: 3800,
-        reactMin: 70,           // 咬钩后反应延迟 ms（拟人）
-        reactMax: 180,
-        recastTimeout: 18000,   // 无咬钩超时重抛 ms
-        catchDelay: [700, 1400],
-        strikeGap: [180, 350],     // 刺鱼后到长按的间隔
-        holdMs: [2600, 3400],      // 长按收杆时长
-        biteWindow: [4000, 9000],  // 定时模式: 抛竿后预计咬钩窗口
-        timedMode: true,           // 定时兜底（无信号也按窗口刺鱼）
-        castPos: [0.5, 0.86],   // 归一化抛竿点
-        reelPos: [0.5, 0.5],    // 归一化收杆点
-        biteSoundRe: /(bite|fish|hook|catch|zhongyu|shanggou|yaogou|diaoyu|hit)/i
-    }
-};
-
+function log(msg) { post({ event: 'log', msg: String(msg) }); }
 function report() {
     post({ event: 'stats', state: AF.state, casts: AF.stats.casts,
            catches: AF.stats.catches, bites: AF.stats.bites });
 }
-function log(msg) { post({ event: 'log', msg: String(msg) }); }
 
-// ---------------- 合成触摸 ----------------
+var AF = {
+    running: false,
+    state: 'idle',          // idle | waiting | striking | reeling
+    lastCast: 0,
+    biteCooldown: 0,
+    hooked: false,
+    releaseHold: null,
+    calib: null,
+    stats: { casts: 0, catches: 0, bites: 0 },
+    cfg: {
+        castMin: 2200,          // 抛竿间隔
+        castMax: 3800,
+        reactMin: 70,           // 咬钩→刺鱼反应延迟
+        reactMax: 180,
+        strikeWait: 3000,       // 刺鱼后等上钩确认超时
+        strikeGap: [180, 350],  // 刺鱼→长按间隔
+        reelMaxMs: 90000,       // 长按上限（协议 f4/83 提前释放）
+        recastTimeout: 25000,   // 无咬钩重抛
+        catchDelay: [700, 1400],
+        castPos: [0.5, 0.86],
+        reelPos: [0.5, 0.5],
+        timedMode: false,       // 定时兜底（默认关，协议信号已精确）
+        biteWindow: [8000, 15000],
+        biteSoundRe: /(bite|fish|hook|catch|zhongyu|shanggou|yaogou|diaoyu|hit)/i
+    }
+};
+
+// ---------------- 触摸引擎 ----------------
 function gameTarget() {
     var list = document.querySelectorAll('canvas');
     var best = null, bestArea = 0;
@@ -131,34 +133,119 @@ function tapNorm(nx, ny) {
     dispatchStart(el, x, y, t);
     dispatchEnd(el, x, y, t);
 }
-// 长按: 按住 holdMs（中途一次 touchmove 防静止判定）
-function holdNorm(nx, ny, holdMs) {
+// 长按: 按住直到 finish 触发（协议释放或超时），AF.releaseHold 供协议提前松手
+function holdNorm(nx, ny, maxMs, onDone) {
     var el = gameTarget();
     var r = el.getBoundingClientRect();
     var x = r.left + nx * r.width, y = r.top + ny * r.height;
     var t = makeTouch(el, x, y);
     dispatchStart(el, x, y, t);
-    setTimeout(function () { dispatchMove(el, x + 1, y + 1, t); }, Math.round(holdMs * 0.4));
-    setTimeout(function () { dispatchEnd(el, x, y, t); }, holdMs);
+    var done = false;
+    var moveT = setInterval(function () { dispatchMove(el, x + 1, y + 1, t); }, 2000);
+    var finish = function () {
+        if (done) return;
+        done = true;
+        clearInterval(moveT);
+        dispatchEnd(el, x, y, t);
+        AF.releaseHold = null;
+        if (onDone) onDone();
+    };
+    AF.releaseHold = finish;
+    setTimeout(finish, maxMs);
 }
 
-// ---------------- 信号源 ----------------
+// ---------------- 协议信号 ----------------
+function onFishFrame(name) {
+    log('上钩: ' + name);
+    if (AF.state === 'striking') {
+        AF.hooked = true;
+        startReel();
+    } else if (AF.state === 'waiting') {
+        onBite('fish');
+    }
+}
+function onReelDone() {
+    if (AF.state === 'reeling' && AF.releaseHold) {
+        log('收杆完成(协议)');
+        AF.releaseHold();
+    }
+}
+
+// ---------------- 状态机 ----------------
+function onBite(src) {
+    if (!AF.running || AF.state !== 'waiting') return;
+    var now = Date.now();
+    if (now - AF.biteCooldown < 400) return;
+    AF.biteCooldown = now;
+    AF.state = 'striking';
+    AF.stats.bites++;
+    log('咬钩(' + src + ')→刺鱼');
+    report();
+    setTimeout(function () {
+        if (AF.state !== 'striking') return;
+        tapNorm(AF.cfg.reelPos[0], AF.cfg.reelPos[1]); // 刺鱼
+        setTimeout(function () {
+            if (AF.state !== 'striking') return;
+            if (AF.hooked) { startReel(); return; } // FISH 帧已到
+            AF.state = 'idle';
+            log('刺鱼未中，重抛');
+            report();
+        }, AF.cfg.strikeWait);
+    }, rand(AF.cfg.reactMin, AF.cfg.reactMax));
+}
+function startReel() {
+    AF.state = 'reeling';
+    log('长按收杆(协议释放, 最长' + Math.round(AF.cfg.reelMaxMs / 1000) + 's)');
+    holdNorm(AF.cfg.reelPos[0], AF.cfg.reelPos[1], AF.cfg.reelMaxMs, function () {
+        setTimeout(function () {
+            tapNorm(AF.cfg.reelPos[0], AF.cfg.reelPos[1]); // 关结算
+            AF.hooked = false;
+            AF.state = 'idle';
+            report();
+        }, rand(AF.cfg.catchDelay[0], AF.cfg.catchDelay[1]));
+    });
+    report();
+}
+
+async function mainLoop() {
+    log('引擎启动');
+    while (AF.running) {
+        if (AF.state === 'idle') {
+            await sleep(rand(250, 700));
+            if (!AF.running) break;
+            AF.state = 'waiting';
+            AF.lastCast = Date.now();
+            AF.stats.casts++;
+            tapNorm(AF.cfg.castPos[0], AF.cfg.castPos[1]);
+            report();
+        } else if (AF.state === 'waiting') {
+            var waited = Date.now() - AF.lastCast;
+            if (AF.cfg.timedMode && waited > AF.biteAt) {
+                onBite('timer');
+            } else if (waited > AF.cfg.recastTimeout) {
+                AF.state = 'idle';
+                log('超时重抛');
+            }
+        }
+        await sleep(200);
+    }
+    AF.state = 'idle';
+    report();
+    log('引擎停止');
+}
+
+// ---------------- WS 拦截（二进制协议解码 + 精确信号） ----------------
 var wsLogCount = 0;
-// 游戏用二进制协议 (v11: JSON.stringify(ArrayBuffer) 全是 "{}")
 function handleServerText(s, fromBinary) {
-    if (s && wsLogCount < 120) { wsLogCount++; log('WS<' + (fromBinary ? 'B:' : '') + s.slice(0, 120) + '>'); }
-    // 精确咬钩信号（实测协议: 文本帧 JSON 载荷 {"c":0,...}）
-    if (AF.running && AF.state === 'waiting' && s.indexOf('"c":0') >= 0) {
-        onBite('proto');
+    if (s && wsLogCount < 150) { wsLogCount++; log('WS<' + (fromBinary ? 'B:' : '') + s.slice(0, 120) + '>'); }
+    // 上钩确认帧: FOLD_FISH + 鱼名
+    if (s.indexOf('FOLD_FISH') >= 0) {
+        var ms = s.match(/[\u4e00-\u9fa5]{2,}/g);
+        onFishFrame(ms && ms.length ? ms[ms.length - 1] : '?');
         return;
     }
     if (!AF.running) return;
-    if (/catch|reward|score|coin|prize|shouhuo|jiangli/i.test(s)) {
-        AF.stats.catches++; report();
-    }
-    if (/(bite|hook|shanggou|yaogou|zhongyu|diaoyu|fish|上钩|咬|中鱼)/i.test(s)) {
-        onBite('ws');
-    }
+    if (/catch|reward|score|coin|prize/i.test(s)) { AF.stats.catches++; report(); }
 }
 function printableRatio(s) {
     if (!s) return 0;
@@ -173,29 +260,23 @@ function onServerMsg(data) {
     try {
         if (data instanceof ArrayBuffer) {
             var arr = new Uint8Array(data);
-            var txt = '';
-            try { txt = new TextDecoder('utf-8').decode(arr); } catch (e) {}
-            if (printableRatio(txt) > 0.7) {
-                handleServerText(txt, true);
-            } else {
-                // 二进制帧: hex 前 60 字节
-                var hex = '';
-                for (var i = 0; i < Math.min(arr.length, 60); i++) hex += ('0' + arr[i].toString(16)).slice(-2);
-                if (wsLogCount < 120) {
-                    wsLogCount++;
-                    log('WS<hex' + arr.length + ':' + hex + '>');
-                }
-                // 收入鱼塘确认帧: soul magic + cmd 0xca (实测协议)
-                if (hex.indexOf('736f756c00000000000000ca') === 0) {
-                    AF.stats.catches++;
-                    report();
-                    log('渔获+1 (协议确认)');
-                }
+            var hex = '';
+            for (var i = 0; i < Math.min(arr.length, 60); i++) hex += ('0' + arr[i].toString(16)).slice(-2);
+            if (wsLogCount < 150) { wsLogCount++; log('WS<hex' + arr.length + ':' + hex + '>'); }
+            // ---- 精确协议匹配（实测） ----
+            if (hex.indexOf('736f756c0100000000000000f400000054') === 0) {
+                onBite('proto');            // 鱼咬
+            } else if (hex.indexOf('736f756c0100000000000000f400000083') === 0) {
+                onReelDone();               // 收杆完成 → 松手
+            } else if (hex.indexOf('736f756c00000000000000ca') === 0) {
+                AF.stats.catches++;         // 收入鱼塘
+                report();
+                log('渔获+1 (协议确认)');
             }
             return;
         }
         if (typeof Blob !== 'undefined' && data instanceof Blob) {
-            data.text().then(function (t) { handleServerText(t, true); }).catch(function () {});
+            data.arrayBuffer().then(function (ab) { onServerMsg(ab); }).catch(function () {});
             return;
         }
         handleServerText(String(data), false);
@@ -218,8 +299,6 @@ function onServerMsg(data) {
         return ws;
     }
     try { WS.prototype = OW.prototype; } catch (e) {}
-    // 关键修复: 复制全部静态常量 (OPEN/CONNECTING/CLOSING/CLOSED...)
-    // v9 漏了这步 → 游戏读 WebSocket.OPEN 拿到 undefined → 连接状态机崩 → "网络不稳定"
     try {
         Object.getOwnPropertyNames(OW).forEach(function (k) {
             if (!(k in WS)) { try { WS[k] = OW[k]; } catch (e) {} }
@@ -229,27 +308,7 @@ function onServerMsg(data) {
     window.WebSocket = WS;
 })();
 
-(function wrapCFGame() {
-    if (!window.CFGame) return;
-    try {
-        var life = window.CFGame.GameLife;
-        if (life && typeof life.gameStateChange === 'function') {
-            var orig = life.gameStateChange;
-            life.gameStateChange = function (data) {
-                try {
-                    if (AF.running && data) {
-                        var s = (typeof data === 'string') ? data : JSON.stringify(data);
-                        if (/start|play|fish|bite|catch/i.test(s)) onBite('state');
-                    }
-                } catch (e) {}
-                return orig.apply(this, arguments);
-            };
-        }
-    } catch (e) {}
-})();
-
-// 游戏音效: HTML5 Audio + 哈希文件名 (d7b5e219....m4a)
-// 记录每次播放的 URL → 咬钩音效的哈希值可从日志识别后精确匹配
+// ---------------- 音频钩子（辅助信号） ----------------
 (function wrapAudio() {
     try {
         if (window.HTMLAudioElement && !HTMLAudioElement.__afHooked) {
@@ -257,7 +316,10 @@ function onServerMsg(data) {
             HTMLAudioElement.prototype.play = function () {
                 try {
                     var u = this.src || this.currentSrc || '';
-                    if (u) AF.onSound(u);
+                    if (u && AF.soundLogCount < 40) {
+                        AF.soundLogCount = (AF.soundLogCount || 0) + 1;
+                        log('音效<' + u.slice(0, 80) + '>');
+                    }
                 } catch (e) {}
                 return origPlay.apply(this, arguments);
             };
@@ -266,6 +328,7 @@ function onServerMsg(data) {
     } catch (e) {}
 })();
 
+// ---------------- DOM 观察（辅助） ----------------
 (function wrapDOM() {
     try {
         var mo = new MutationObserver(function (muts) {
@@ -285,70 +348,6 @@ function onServerMsg(data) {
         mo.observe(document.documentElement, { childList: true, subtree: true });
     } catch (e) {}
 })();
-
-// ---------------- 状态机 ----------------
-AF.onBite = function (src) {
-    if (!AF.running || AF.state !== 'waiting') return;
-    var now = Date.now();
-    if (now - AF.biteCooldown < 400) return;
-    AF.biteCooldown = now;
-    AF.state = 'reeling';
-    AF.stats.bites++;
-    log('咬钩(' + src + ')→刺鱼');
-    report();
-    var react = rand(AF.cfg.reactMin, AF.cfg.reactMax);
-    setTimeout(function () {
-        tapNorm(AF.cfg.reelPos[0], AF.cfg.reelPos[1]); // 刺鱼（点按）
-        setTimeout(function () {
-            var hold = rand(AF.cfg.holdMs[0], AF.cfg.holdMs[1]);
-            log('长按收杆 ' + Math.round(hold) + 'ms');
-            holdNorm(AF.cfg.reelPos[0], AF.cfg.reelPos[1], hold); // 长按收杆
-            setTimeout(function () {
-                tapNorm(AF.cfg.reelPos[0], AF.cfg.reelPos[1]); // 关结算
-                AF.stats.catches++;
-                AF.state = 'idle';
-                report();
-            }, hold + rand(AF.cfg.catchDelay[0], AF.cfg.catchDelay[1]));
-        }, rand(AF.cfg.strikeGap[0], AF.cfg.strikeGap[1]));
-    }, react);
-};
-
-AF.onSound = function (idOrUrl) {
-    var s = String(idOrUrl || '');
-    if (s && AF.soundLogCount < 40) { AF.soundLogCount = (AF.soundLogCount || 0) + 1; log('音效<' + s.slice(0, 80) + '>'); }
-    if (AF.cfg.biteSoundRe.test(s)) onBite('sound');
-};
-
-async function mainLoop() {
-    log('引擎启动');
-    while (AF.running) {
-        if (AF.state === 'idle') {
-            await sleep(rand(250, 700));
-            if (!AF.running) break;
-            AF.state = 'waiting';
-            AF.lastCast = Date.now();
-            AF.biteAt = rand(AF.cfg.biteWindow[0], AF.cfg.biteWindow[1]);
-            AF.stats.casts++;
-            var el = gameTarget();
-            tapNorm(AF.cfg.castPos[0], AF.cfg.castPos[1]);
-            log('抛竿→' + (el.tagName || '?') + ' ' + Math.round(AF.cfg.castPos[0] * 100) + '%,' + Math.round(AF.cfg.castPos[1] * 100) + '%');
-            report();
-        } else if (AF.state === 'waiting') {
-            var waited = Date.now() - AF.lastCast;
-            // 定时兜底: 信号没来但窗口到了 → 当作咬钩（真实信号提前触发，互不冲突）
-            if (AF.cfg.timedMode && waited > AF.biteAt) {
-                onBite('timer');
-            } else if (waited > AF.cfg.recastTimeout) {
-                AF.state = 'idle';
-                log('超时重抛');
-            }
-        }
-        await sleep(200);
-    }
-    AF.state = 'idle';
-    report();
-    log('引擎停止');
-}
 
 // ---------------- 校准 ----------------
 AF.startCalibrate = function () {
@@ -384,6 +383,7 @@ AF.cmd = function (name, arg) {
             break;
         case 'stop':
             AF.running = false;
+            if (AF.releaseHold) AF.releaseHold();
             break;
         case 'cfg':
             if (arg && typeof arg === 'object') {
@@ -392,9 +392,6 @@ AF.cmd = function (name, arg) {
             break;
         case 'calibrate':
             AF.startCalibrate();
-            break;
-        case 'sound':
-            AF.onSound(arg && (arg.url || arg.id));
             break;
         case 'stats':
             report();
@@ -405,7 +402,7 @@ AF.cmd = function (name, arg) {
 };
 
 window.__autoFish = AF;
-log('自动钓鱼引擎就绪 ' + location.href.slice(0, 80));
+log('自动钓鱼引擎 v15 就绪 ' + location.href.slice(0, 80));
 report();
 })();
 )AFJS";
