@@ -148,30 +148,6 @@ NSString *AFMakeJSCmd(NSString *name, NSDictionary *arg) {
 }
 @end
 
-#pragma mark - 穿透窗口（panel 挂在穿透式根视图内）
-
-@interface AFPassthroughView : UIView
-@end
-
-@implementation AFPassthroughView
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *v = [super hitTest:point withEvent:event];
-    return (v == self) ? nil : v; // 空白处穿透；面板/按钮正常响应
-}
-@end
-
-@interface AFOverlayVC : UIViewController
-@end
-
-@implementation AFOverlayVC
-- (void)loadView {
-    AFPassthroughView *v = [[AFPassthroughView alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    v.backgroundColor = UIColor.clearColor;
-    v.userInteractionEnabled = YES;
-    self.view = v;
-}
-@end
-
 #pragma mark - AutoFishWindow
 
 @interface AutoFishWindow ()
@@ -362,34 +338,29 @@ static CGFloat const kPanelSettingsH = 168.0;
                     if ([s isKindOfClass:UIWindowScene.class]) { ws = (UIWindowScene *)s; break; }
                 }
             }
-            CGRect frame = UIScreen.mainScreen.bounds;
+            CGRect sf = UIScreen.mainScreen.bounds;
             UIWindow *win = nil;
             if (@available(iOS 13.0, *)) {
-                if (ws) {
-                    win = [[UIWindow alloc] initWithWindowScene:ws];
-                    frame = ws.coordinateSpace.bounds;
-                }
+                if (ws) win = [[UIWindow alloc] initWithWindowScene:ws];
             }
-            if (!win) win = [[UIWindow alloc] initWithFrame:frame];
-            // 注意：scene 窗口的 frame 由 scene 驱动，不手动设置（v3 崩溃嫌疑点之一）
+            // v5: 小窗口方案 —— 窗口=面板大小（同系统键盘窗原理）
+            // 无穿透视图/无自定义类/无 hitTest 覆写，窗口外触摸天然穿不到
+            CGRect pf = CGRectMake(sf.size.width - kPanelW - 10, 100, kPanelW, kPanelH);
+            if (!win) win = [[UIWindow alloc] initWithFrame:pf];
             win.windowLevel = UIWindowLevelAlert + 10.0;
+            win.frame = pf;
             win.backgroundColor = UIColor.clearColor;
-            win.userInteractionEnabled = YES;
-            win.rootViewController = [[AFOverlayVC alloc] init];
+            win.rootViewController = [UIViewController new]; // 纯系统 VC
+            win.rootViewController.view.backgroundColor = UIColor.clearColor;
+            [win.rootViewController.view addSubview:self.panel];
+            [win.rootViewController.view addSubview:self.dotBtn];
+            self.panel.frame = CGRectMake(0, 0, kPanelW, kPanelH);
+            self.dotBtn.frame = CGRectMake(0, 0, 44, 44);
+            self.dotBtn.hidden = YES;
             win.hidden = NO;
             self.overlay = win;
-
-            UIView *root = win.rootViewController.view;
-            [root addSubview:self.panel];
-            [root addSubview:self.dotBtn];
-
-            self.panel.center = CGPointMake(frame.size.width - kPanelW / 2 - 10,
-                                             100.0 + kPanelH / 2);
-            self.dotBtn.center = CGPointMake(frame.size.width - 36, 170);
         }
         self.overlay.hidden = NO;
-        self.panel.hidden = NO;
-        self.dotBtn.hidden = YES;
     });
 }
 
@@ -397,11 +368,16 @@ static CGFloat const kPanelSettingsH = 168.0;
 
 - (void)onPan:(UIPanGestureRecognizer *)g {
     AFSafe(^{
-        UIView *sv = self.panel.superview ?: self.overlay;
-        CGPoint t = [g translationInView:sv];
-        CGPoint c = self.panel.center;
-        self.panel.center = CGPointMake(c.x + t.x, c.y + t.y);
-        [g setTranslation:CGPointZero inView:sv];
+        CGPoint t = [g translationInView:self.panel];
+        CGRect f = self.overlay.frame;
+        f.origin.x += t.x;
+        f.origin.y += t.y;
+        // 限制在屏幕内
+        CGRect sb = UIScreen.mainScreen.bounds;
+        f.origin.x = fmaxf(0, fminf(f.origin.x, sb.size.width - f.size.width));
+        f.origin.y = fmaxf(0, fminf(f.origin.y, sb.size.height - f.size.height));
+        self.overlay.frame = f;
+        [g setTranslation:CGPointZero inView:self.panel];
     });
 }
 
@@ -420,6 +396,9 @@ static CGFloat const kPanelSettingsH = 168.0;
 
 - (void)onMinimize {
     AFSafe(^{
+        CGRect f = self.overlay.frame;
+        self.dotBtn.frame = CGRectMake(f.size.width - 44, 0, 44, 44);
+        self.overlay.frame = CGRectMake(f.origin.x + f.size.width - 44, f.origin.y, 44, 44);
         self.panel.hidden = YES;
         self.dotBtn.hidden = NO;
     });
@@ -427,6 +406,9 @@ static CGFloat const kPanelSettingsH = 168.0;
 
 - (void)onRestore {
     AFSafe(^{
+        CGRect f = self.overlay.frame;
+        self.overlay.frame = CGRectMake(f.origin.x, f.origin.y, kPanelW, kPanelH);
+        self.panel.frame = CGRectMake(0, 0, kPanelW, kPanelH);
         self.panel.hidden = NO;
         self.dotBtn.hidden = YES;
     });
@@ -443,9 +425,10 @@ static CGFloat const kPanelSettingsH = 168.0;
         self.calibBtn.hidden = YES;
         self.setBtn.hidden = YES;
         self.minBtn.hidden = YES;
-        CGRect f = self.panel.frame;
+        CGRect f = self.overlay.frame;
         f.size.height = kPanelSettingsH;
-        self.panel.frame = f;
+        self.overlay.frame = f;
+        self.panel.frame = CGRectMake(0, 0, kPanelW, kPanelSettingsH);
     });
 }
 
@@ -458,9 +441,10 @@ static CGFloat const kPanelSettingsH = 168.0;
         self.calibBtn.hidden = NO;
         self.setBtn.hidden = NO;
         self.minBtn.hidden = NO;
-        CGRect f = self.panel.frame;
+        CGRect f = self.overlay.frame;
         f.size.height = kPanelH;
-        self.panel.frame = f;
+        self.overlay.frame = f;
+        self.panel.frame = CGRectMake(0, 0, kPanelW, kPanelH);
     });
 }
 
