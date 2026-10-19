@@ -69,11 +69,15 @@ function tapNorm(nx, ny) {
     var y = r.top + ny * r.height;
     var touch = null;
     try {
+        // 关键: pageX/pageY 必须显式设置 — Touch 构造器默认 0，
+        // canvas 引擎读 touches[0].pageX/pageY → v10 全落在 (0,0)
         touch = new Touch({ identifier: 1, target: el, clientX: x, clientY: y,
+                            pageX: x, pageY: y, screenX: x, screenY: y,
                             radiusX: 2, radiusY: 2, rotationAngle: 0, force: 1 });
     } catch (e) {}
     var base = { bubbles: true, cancelable: true, view: window,
-                 clientX: x, clientY: y, screenX: x, screenY: y, button: 0 };
+                 clientX: x, clientY: y, screenX: x, screenY: y,
+                 pageX: x, pageY: y, button: 0 };
     var evts = [];
     try {
         var t0 = touch ? { touches: [touch], targetTouches: [touch], changedTouches: [touch] }
@@ -97,9 +101,11 @@ function tapNorm(nx, ny) {
 }
 
 // ---------------- 信号源 ----------------
+var wsLogCount = 0;
 function onServerMsg(data) {
     var s = '';
     try { s = (typeof data === 'string') ? data : JSON.stringify(data); } catch (e) { return; }
+    if (s && wsLogCount < 80) { wsLogCount++; log('WS<' + s.slice(0, 100) + '>'); }
     if (!AF.running) return;
     if (/catch|reward|score|coin|prize|shouhuo|jiangli/i.test(s)) {
         AF.stats.catches++; report();
@@ -198,6 +204,7 @@ function onBite(src) {
 
 AF.onSound = function (idOrUrl) {
     var s = String(idOrUrl || '');
+    if (s && AF.soundLogCount < 40) { AF.soundLogCount = (AF.soundLogCount || 0) + 1; log('音效<' + s.slice(0, 80) + '>'); }
     if (AF.cfg.biteSoundRe.test(s)) onBite('sound');
 };
 
