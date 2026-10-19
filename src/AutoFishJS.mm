@@ -102,17 +102,51 @@ function tapNorm(nx, ny) {
 
 // ---------------- 信号源 ----------------
 var wsLogCount = 0;
-function onServerMsg(data) {
-    var s = '';
-    try { s = (typeof data === 'string') ? data : JSON.stringify(data); } catch (e) { return; }
-    if (s && wsLogCount < 80) { wsLogCount++; log('WS<' + s.slice(0, 100) + '>'); }
+// 游戏用二进制协议 (v11: JSON.stringify(ArrayBuffer) 全是 "{}")
+function handleServerText(s, fromBinary) {
+    if (s && wsLogCount < 120) { wsLogCount++; log('WS<' + (fromBinary ? 'B:' : '') + s.slice(0, 120) + '>'); }
     if (!AF.running) return;
     if (/catch|reward|score|coin|prize|shouhuo|jiangli/i.test(s)) {
         AF.stats.catches++; report();
     }
-    if (/(bite|hook|shanggou|yaogou|zhongyu|diaoyu)/i.test(s)) {
+    if (/(bite|hook|shanggou|yaogou|zhongyu|diaoyu|fish|上钩|咬|中鱼)/i.test(s)) {
         onBite('ws');
     }
+}
+function printableRatio(s) {
+    if (!s) return 0;
+    var ok = 0, n = Math.min(s.length, 200);
+    for (var i = 0; i < n; i++) {
+        var c = s.charCodeAt(i);
+        if ((c >= 32 && c < 127) || c > 0x4E00) ok++;
+    }
+    return n ? ok / n : 0;
+}
+function onServerMsg(data) {
+    try {
+        if (data instanceof ArrayBuffer) {
+            var arr = new Uint8Array(data);
+            var txt = '';
+            try { txt = new TextDecoder('utf-8').decode(arr); } catch (e) {}
+            if (printableRatio(txt) > 0.7) {
+                handleServerText(txt, true);
+            } else {
+                // 二进制帧: hex 前 60 字节
+                if (wsLogCount < 120) {
+                    wsLogCount++;
+                    var hex = '';
+                    for (var i = 0; i < Math.min(arr.length, 60); i++) hex += ('0' + arr[i].toString(16)).slice(-2);
+                    log('WS<hex' + arr.length + ':' + hex + '>');
+                }
+            }
+            return;
+        }
+        if (typeof Blob !== 'undefined' && data instanceof Blob) {
+            data.text().then(function (t) { handleServerText(t, true); }).catch(function () {});
+            return;
+        }
+        handleServerText(String(data), false);
+    } catch (e) {}
 }
 
 (function wrapWS() {
@@ -157,6 +191,24 @@ function onServerMsg(data) {
                 } catch (e) {}
                 return orig.apply(this, arguments);
             };
+        }
+    } catch (e) {}
+})();
+
+// 游戏音效: HTML5 Audio + 哈希文件名 (d7b5e219....m4a)
+// 记录每次播放的 URL → 咬钩音效的哈希值可从日志识别后精确匹配
+(function wrapAudio() {
+    try {
+        if (window.HTMLAudioElement && !HTMLAudioElement.__afHooked) {
+            var origPlay = HTMLAudioElement.prototype.play;
+            HTMLAudioElement.prototype.play = function () {
+                try {
+                    var u = this.src || this.currentSrc || '';
+                    if (u) AF.onSound(u);
+                } catch (e) {}
+                return origPlay.apply(this, arguments);
+            };
+            HTMLAudioElement.__afHooked = true;
         }
     } catch (e) {}
 })();
