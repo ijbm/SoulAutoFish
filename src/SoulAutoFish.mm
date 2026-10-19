@@ -159,6 +159,23 @@ static void h_cfSound(id self, SEL _cmd, id body) {
     } @catch (id e) {}
 }
 
+#pragma mark - SoulAppletPageBaseViewController hook（Soul 小程序/RN/H5 页面容器）
+
+// soul_h5_* bundle（含钓鱼游戏候选）走 SoulAppletsManager 体系，
+// 页面基类持有 webView 并实现 WKNavigationDelegate。
+// didFinishNavigation = 页面就绪，捕获 webview + 注入引擎 + 打 URL 诊断。
+static void (*orig_pageDidFinishNav)(id, SEL, id, id);
+static void h_pageDidFinishNav(id self, SEL _cmd, WKWebView *wv, id nav) {
+    if (orig_pageDidFinishNav) orig_pageDidFinishNav(self, _cmd, wv, nav);
+    if (!wv) return;
+    NSString *url = wv.URL.absoluteString ?: @"";
+    NSString *short = url.length > 70 ? [url substringToIndex:70] : url;
+    [[AutoFishWindow shared] addLog:[NSString stringWithFormat:@"页面: %@", short]];
+    [[AutoFishWindow shared] attachWebView:wv];
+    if ([NSThread isMainThread]) af_inject(wv);
+    else dispatch_async(dispatch_get_main_queue(), ^{ af_inject(wv); });
+}
+
 #pragma mark - 钓鱼浮窗自动展开
 
 static void (*orig_addSubview)(id, SEL, id);
@@ -237,6 +254,13 @@ __attribute__((constructor)) static void SoulAutoFishEntry(void) {
             if (orig_didExpand) n++;
         }
 
+        Class pageVC = NSClassFromString(@"SoulAppletPageBaseViewController");
+        if (pageVC) {
+            orig_pageDidFinishNav = (void (*)(id, SEL, id, id))af_swizzle(pageVC,
+                @selector(webView:didFinishNavigation:), (IMP)h_pageDidFinishNav);
+            if (orig_pageDidFinishNav) n++;
+        }
+
         orig_addSubview = (void (*)(id, SEL, id))af_swizzle([UIView class],
             @selector(addSubview:), (IMP)h_addSubview);
         if (orig_addSubview) n++;
@@ -250,7 +274,7 @@ __attribute__((constructor)) static void SoulAutoFishEntry(void) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [[AutoFishWindow shared] addLog:[NSString stringWithFormat:
-                @"hooks %d/9 · applets:%@ cf:%@ [v7-lazyui]", n, appletsOK, cfOK]];
+                @"hooks %d/10 · applets:%@ cf:%@ [v8-dualpath]", n, appletsOK, cfOK]];
             [[AutoFishWindow shared] show];
         });
     }
