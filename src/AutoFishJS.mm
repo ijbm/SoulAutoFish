@@ -274,6 +274,13 @@ function onServerMsg(data) {
                 AF.stats.catches++;         // 收入鱼塘
                 report();
                 log('渔获+1 (协议确认)');
+            } else if (hex.indexOf('736f756c0000000000000092') === 0) {
+                // 刺鱼成功确认 (实测: soul+00+92, 85字节, 用户标注)
+                if (AF.state === 'striking') {
+                    AF.hooked = true;
+                    log('刺鱼成功(0x92)');
+                    startReel();
+                }
             }
             // ---- FOLD_FISH 上钩确认: 直接在原始字节里搜 ASCII 子串 ----
             // (v15 bug: 该帧以二进制到达时文本解码路径不跑 → 刺鱼成功被误判为未中)
