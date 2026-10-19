@@ -242,11 +242,15 @@ __attribute__((constructor)) static void SoulAutoFishEntry(void) {
         if (orig_addSubview) n++;
 
         AFLog(@"%d hooks installed", n);
-        [[AutoFishWindow shared] addLog:[NSString stringWithFormat:@"hooks %d/9 · applets:%@ cf:%@ [v6-sceneless]",
-            n, applets ? @"✓" : @"✗", cfvc ? @"✓" : @"✗"]];
-
+        // v7: 构造函数在 pre-main 阶段执行（UIApplicationMain 未启动），
+        // v2~v6 在这里创建 UI，视图带半初始化状态进 UIKit 事件节点图，
+        // 首次触摸路由即 targetNode 断言。全部 UI 延迟到主 runloop 创建。
+        NSString *appletsOK = applets ? @"✓" : @"✗";
+        NSString *cfOK = cfvc ? @"✓" : @"✗";
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
+            [[AutoFishWindow shared] addLog:[NSString stringWithFormat:
+                @"hooks %d/9 · applets:%@ cf:%@ [v7-lazyui]", n, appletsOK, cfOK]];
             [[AutoFishWindow shared] show];
         });
     }
