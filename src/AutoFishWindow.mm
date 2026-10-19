@@ -47,23 +47,34 @@ static UIViewController *AFTopViewController(void) {
     return vc;
 }
 
-#pragma mark - 穿透窗口
+#pragma mark - 穿透窗口（标准悬浮窗方案：panel 挂在穿透式根视图内）
 
-@interface AFOverlayWindow : UIWindow
+@interface AFPassthroughView : UIView
 @end
 
-@implementation AFOverlayWindow
+@implementation AFPassthroughView
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *v = [super hitTest:point withEvent:event];
-    if (v == self || v == self.rootViewController.view) return nil; // 空白处穿透
-    return v;
+    return (v == self) ? nil : v; // 空白处穿透；面板/按钮正常响应
+}
+@end
+
+@interface AFOverlayVC : UIViewController
+@end
+
+@implementation AFOverlayVC
+- (void)loadView {
+    AFPassthroughView *v = [[AFPassthroughView alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    v.backgroundColor = UIColor.clearColor;
+    v.userInteractionEnabled = YES;
+    self.view = v;
 }
 @end
 
 #pragma mark - AutoFishWindow
 
 @interface AutoFishWindow ()
-@property (nonatomic, strong) AFOverlayWindow *overlay;
+@property (nonatomic, strong) UIWindow *overlay;
 @property (nonatomic, strong) UIView *panel;
 @property (nonatomic, strong) UIButton *dotBtn;
 @property (nonatomic, strong) UILabel *statusLabel;
@@ -188,24 +199,30 @@ static CGFloat const kPanelH = 110.0;
                     if ([s isKindOfClass:UIWindowScene.class]) { ws = (UIWindowScene *)s; break; }
                 }
             }
+            CGRect frame = UIScreen.mainScreen.bounds;
+            UIWindow *win = nil;
             if (@available(iOS 13.0, *)) {
-                if (ws) self.overlay = [[AFOverlayWindow alloc] initWithWindowScene:ws];
+                if (ws) {
+                    win = [[UIWindow alloc] initWithWindowScene:ws];
+                    frame = ws.coordinateSpace.bounds;
+                }
             }
-            if (!self.overlay) self.overlay = [[AFOverlayWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-            self.overlay.windowLevel = UIWindowLevelAlert + 10.0;
-            self.overlay.backgroundColor = UIColor.clearColor;
-            self.overlay.rootViewController = [UIViewController new];
-            self.overlay.rootViewController.view.backgroundColor = UIColor.clearColor;
-            [self.overlay addSubview:self.panel];
-            [self.overlay addSubview:self.dotBtn];
+            if (!win) win = [[UIWindow alloc] initWithFrame:frame];
+            win.frame = frame; // 显式设置，防止 scene 尺寸未同步
+            win.windowLevel = UIWindowLevelAlert + 10.0;
+            win.backgroundColor = UIColor.clearColor;
+            win.userInteractionEnabled = YES;
+            win.rootViewController = [[AFOverlayVC alloc] init];
+            win.hidden = NO;
+            self.overlay = win;
 
-            CGRect sb = self.overlay.bounds;
-            CGFloat top = 100.0;
-            if (@available(iOS 13.0, *)) {
-                top = 44.0 + 56.0; // 状态栏 + 头部余量，保守值
-            }
-            self.panel.center = CGPointMake(sb.size.width - kPanelW / 2 - 10, top + kPanelH / 2);
-            self.dotBtn.center = CGPointMake(sb.size.width - 36, 170);
+            UIView *root = win.rootViewController.view;
+            [root addSubview:self.panel];
+            [root addSubview:self.dotBtn];
+
+            self.panel.center = CGPointMake(frame.size.width - kPanelW / 2 - 10,
+                                             100.0 + kPanelH / 2);
+            self.dotBtn.center = CGPointMake(frame.size.width - 36, 170);
         }
         self.overlay.hidden = NO;
         self.panel.hidden = NO;
@@ -216,10 +233,11 @@ static CGFloat const kPanelH = 110.0;
 #pragma mark actions
 
 - (void)onPan:(UIPanGestureRecognizer *)g {
-    CGPoint t = [g translationInView:self.overlay];
+    UIView *sv = self.panel.superview ?: self.overlay;
+    CGPoint t = [g translationInView:sv];
     CGPoint c = self.panel.center;
     self.panel.center = CGPointMake(c.x + t.x, c.y + t.y);
-    [g setTranslation:CGPointZero inView:self.overlay];
+    [g setTranslation:CGPointZero inView:sv];
 }
 
 - (void)onMain {
