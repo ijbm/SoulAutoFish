@@ -36,12 +36,14 @@ void AFWriteLogLine(NSString *s) {
     } @catch (id e) {}
 }
 
+static void af_uncaught_handler(NSException *e) {
+    NSString *s = [NSString stringWithFormat:@"UNCAUGHT EXCEPTION: %@\nreason: %@\nstack:\n%@",
+                   e.name, e.reason, [e.callStackSymbols componentsJoinedByString:@"\n"]];
+    AFWriteLogLine(s);
+}
+
 void AFInstallCrashCapture(void) {
-    NSSetUncaughtExceptionHandler(^(NSException *e) {
-        NSString *s = [NSString stringWithFormat:@"UNCAUGHT EXCEPTION: %@\nreason: %@\nstack:\n%@",
-                       e.name, e.reason, [e.callStackSymbols componentsJoinedByString:@"\n"]];
-        AFWriteLogLine(s);
-    });
+    NSSetUncaughtExceptionHandler(&af_uncaught_handler);
 }
 
 /// 动作装甲：异常捕获落盘，不崩
