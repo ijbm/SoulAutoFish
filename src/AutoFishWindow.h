@@ -28,5 +28,6 @@ NSString *AFJSEscape(NSString *s);
 
 @property (nonatomic, readonly) BOOL autoStart;
 @property (nonatomic, readonly) BOOL autoExpand;
+@property (nonatomic, readonly) BOOL fishingActive;
 @property (nonatomic, weak, readonly) WKWebView *webview;
 @end
