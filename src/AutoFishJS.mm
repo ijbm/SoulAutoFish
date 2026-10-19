@@ -43,13 +43,13 @@ var AF = {
     cfg: {
         castMin: 2200,          // 抛竿间隔
         castMax: 3800,
-        reactMin: 70,           // 咬钩→刺鱼反应延迟
-        reactMax: 180,
+        reactMin: 900,          // 咬钩→刺鱼延迟(实测约1秒)
+        reactMax: 1300,
         strikeWait: 3000,       // 刺鱼后等上钩确认超时
         strikeGap: [180, 350],  // 刺鱼→长按间隔
         reelMaxMs: 90000,       // 收杆总上限（协议 f4/83 提前结束）
-        reelHold: [1200, 1800], // 脉冲收杆: 按住时长
-        reelRest: [400, 800],   // 脉冲收杆: 松开时长（一直按住会跑鱼）
+        reelHold: [3000, 5000], // 脉冲收杆: 按住时长(实测3-5秒)
+        reelRest: [800, 1200],  // 脉冲收杆: 松开时长
         recastTimeout: 25000,   // 无咬钩重抛
         catchDelay: [700, 1400],
         castPos: [0.5, 0.86],
