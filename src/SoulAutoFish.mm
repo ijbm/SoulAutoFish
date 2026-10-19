@@ -176,6 +176,42 @@ static void h_pageDidFinishNav(id self, SEL _cmd, WKWebView *wv, id nav) {
     else dispatch_async(dispatch_get_main_queue(), ^{ af_inject(wv); });
 }
 
+#pragma mark - WKWebView 全局捕获（终极兜底：三个容器 hook 都没抓到钓鱼游戏）
+
+static void (*orig_wkInit)(id, SEL, CGRect, id);
+static id h_wkInit(id self, SEL _cmd, CGRect frame, id config) {
+    id result = orig_wkInit ? orig_wkInit(self, _cmd, frame, config) : nil;
+    @try {
+        if ([result isKindOfClass:[WKWebView class]]) {
+            WKWebView *wv = (WKWebView *)result;
+            [[AutoFishWindow shared] addLog:@"新 WebView 创建"];
+            [[AutoFishWindow shared] attachWebView:wv];
+            if ([NSThread isMainThread]) af_inject(wv);
+            else dispatch_async(dispatch_get_main_queue(), ^{ af_inject(wv); });
+        }
+    } @catch (id e) {}
+    return result;
+}
+
+static void (*orig_wkLoadReq)(id, SEL, id);
+static id h_wkLoadReq(id self, SEL _cmd, id req) {
+    id result = orig_wkLoadReq ? orig_wkLoadReq(self, _cmd, req) : nil;
+    @try {
+        NSString *url = nil;
+        @try { url = [[req valueForKey:@"URL"] valueForKey:@"absoluteString"]; } @catch (id e) {}
+        NSString *s = (url && url.length > 70) ? [url substringToIndex:70] : (url ?: @"?");
+        [[AutoFishWindow shared] addLog:[NSString stringWithFormat:@"加载: %@", s]];
+        // 钓鱼场景 + 自动启动 → webview 就绪后开引擎
+        if ([[AutoFishWindow shared] fishingActive] && [[AutoFishWindow shared] autoStart]) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [[AutoFishWindow shared] startEngine];
+            });
+        }
+    } @catch (id e) {}
+    return result;
+}
+
 #pragma mark - 钓鱼浮窗自动展开
 
 static void (*orig_addSubview)(id, SEL, id);
@@ -261,6 +297,16 @@ __attribute__((constructor)) static void SoulAutoFishEntry(void) {
             if (orig_pageDidFinishNav) n++;
         }
 
+        Class wkCls = [WKWebView class];
+        if (wkCls) {
+            orig_wkInit = (void (*)(id, SEL, CGRect, id))af_swizzle(wkCls,
+                @selector(initWithFrame:configuration:), (IMP)h_wkInit);
+            if (orig_wkInit) n++;
+            orig_wkLoadReq = (void (*)(id, SEL, id))af_swizzle(wkCls,
+                @selector(loadRequest:), (IMP)h_wkLoadReq);
+            if (orig_wkLoadReq) n++;
+        }
+
         orig_addSubview = (void (*)(id, SEL, id))af_swizzle([UIView class],
             @selector(addSubview:), (IMP)h_addSubview);
         if (orig_addSubview) n++;
@@ -274,7 +320,7 @@ __attribute__((constructor)) static void SoulAutoFishEntry(void) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [[AutoFishWindow shared] addLog:[NSString stringWithFormat:
-                @"hooks %d/10 · applets:%@ cf:%@ [v8-dualpath]", n, appletsOK, cfOK]];
+                @"hooks %d/12 · applets:%@ cf:%@ [v9-wkhook]", n, appletsOK, cfOK]];
             [[AutoFishWindow shared] show];
         });
     }
