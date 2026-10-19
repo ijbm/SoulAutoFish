@@ -201,6 +201,10 @@ static id h_wkLoadReq(id self, SEL _cmd, id req) {
         @try { url = [[req valueForKey:@"URL"] valueForKey:@"absoluteString"]; } @catch (id e) {}
         NSString *s = (url && url.length > 70) ? [url substringToIndex:70] : (url ?: @"?");
         [[AutoFishWindow shared] addLog:[NSString stringWithFormat:@"加载: %@", s]];
+        // 钓鱼游戏页面识别 (china-img.soulapp.cn/open/162/.../package/index.html)
+        if (url && [url containsString:@"soulapp.cn/open/"] && [url hasSuffix:@"index.html"]) {
+            [[AutoFishWindow shared] attachGameWebView:(WKWebView *)self];
+        }
         // 钓鱼场景 + 自动启动 → webview 就绪后开引擎
         if ([[AutoFishWindow shared] fishingActive] && [[AutoFishWindow shared] autoStart]) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
@@ -320,7 +324,7 @@ __attribute__((constructor)) static void SoulAutoFishEntry(void) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [[AutoFishWindow shared] addLog:[NSString stringWithFormat:
-                @"hooks %d/12 · applets:%@ cf:%@ [v9-wkhook]", n, appletsOK, cfOK]];
+                @"hooks %d/12 · applets:%@ cf:%@ [v10-wsfix]", n, appletsOK, cfOK]];
             [[AutoFishWindow shared] show];
         });
     }
