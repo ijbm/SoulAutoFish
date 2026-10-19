@@ -147,6 +147,11 @@ var wsLogCount = 0;
 // 游戏用二进制协议 (v11: JSON.stringify(ArrayBuffer) 全是 "{}")
 function handleServerText(s, fromBinary) {
     if (s && wsLogCount < 120) { wsLogCount++; log('WS<' + (fromBinary ? 'B:' : '') + s.slice(0, 120) + '>'); }
+    // 精确咬钩信号（实测协议: 文本帧 JSON 载荷 {"c":0,...}）
+    if (AF.running && AF.state === 'waiting' && s.indexOf('"c":0') >= 0) {
+        onBite('proto');
+        return;
+    }
     if (!AF.running) return;
     if (/catch|reward|score|coin|prize|shouhuo|jiangli/i.test(s)) {
         AF.stats.catches++; report();
@@ -174,11 +179,17 @@ function onServerMsg(data) {
                 handleServerText(txt, true);
             } else {
                 // 二进制帧: hex 前 60 字节
+                var hex = '';
+                for (var i = 0; i < Math.min(arr.length, 60); i++) hex += ('0' + arr[i].toString(16)).slice(-2);
                 if (wsLogCount < 120) {
                     wsLogCount++;
-                    var hex = '';
-                    for (var i = 0; i < Math.min(arr.length, 60); i++) hex += ('0' + arr[i].toString(16)).slice(-2);
                     log('WS<hex' + arr.length + ':' + hex + '>');
+                }
+                // 收入鱼塘确认帧: soul magic + cmd 0xca (实测协议)
+                if (hex.indexOf('736f756c00000000000000ca') === 0) {
+                    AF.stats.catches++;
+                    report();
+                    log('渔获+1 (协议确认)');
                 }
             }
             return;
