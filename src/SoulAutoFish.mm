@@ -299,10 +299,10 @@ __attribute__((constructor)) static void SoulAutoFishEntry(void) {
 
         Class wkCls = [WKWebView class];
         if (wkCls) {
-            orig_wkInit = (void (*)(id, SEL, CGRect, id))af_swizzle(wkCls,
+            orig_wkInit = (id (*)(id, SEL, CGRect, id))af_swizzle(wkCls,
                 @selector(initWithFrame:configuration:), (IMP)h_wkInit);
             if (orig_wkInit) n++;
-            orig_wkLoadReq = (void (*)(id, SEL, id))af_swizzle(wkCls,
+            orig_wkLoadReq = (id (*)(id, SEL, id))af_swizzle(wkCls,
                 @selector(loadRequest:), (IMP)h_wkLoadReq);
             if (orig_wkLoadReq) n++;
         }
