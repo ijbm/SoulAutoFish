@@ -225,6 +225,8 @@ async function mainLoop() {
             } else if (waited > AF.cfg.recastTimeout) {
                 AF.state = 'idle';
                 log('超时重抛');
+                // 清理可能的挂线状态（鱼还在线上时抛竿无效）
+                tapNorm(AF.cfg.reelPos[0], AF.cfg.reelPos[1]);
             }
         }
         await sleep(200);
@@ -272,6 +274,18 @@ function onServerMsg(data) {
                 AF.stats.catches++;         // 收入鱼塘
                 report();
                 log('渔获+1 (协议确认)');
+            }
+            // ---- FOLD_FISH 上钩确认: 直接在原始字节里搜 ASCII 子串 ----
+            // (v15 bug: 该帧以二进制到达时文本解码路径不跑 → 刺鱼成功被误判为未中)
+            if (arr.length > 16 && arr.length < 4096) {
+                var latin = '';
+                for (var j = 0; j < arr.length; j++) latin += String.fromCharCode(arr[j]);
+                if (latin.indexOf('FOLD_FISH') >= 0) {
+                    var txt = '';
+                    try { txt = new TextDecoder('utf-8').decode(arr); } catch (e) { txt = latin; }
+                    var ms = txt.match(/[一-龥]{2,}/g);
+                    onFishFrame(ms && ms.length ? ms[ms.length - 1] : '?');
+                }
             }
             return;
         }
