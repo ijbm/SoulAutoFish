@@ -1,5 +1,9 @@
 // AutoFishWindow.mm
-// 悬浮控制窗实现：独立 UIWindow (Alert+10) + hitTest 穿透 + 可拖拽面板
+// 悬浮控制窗 v3：
+//   - 面板内嵌设置页（不 present 任何 VC，避开宿主 VC 生命周期 swizzle）
+//   - 全部按钮动作 @try/@catch 装甲，异常落盘不崩
+//   - 未捕获异常记录器 → Documents/SoulAutoFish_log.txt
+//   - 穿透式根视图标准悬浮窗结构
 #import "AutoFishWindow.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -10,7 +14,46 @@ static NSString * const kSpeed      = @"af_speed";     // 0 慢 1 正常 2 快
 static NSString * const kCastPos    = @"af_castpos";  // "x,y"
 static NSString * const kReelPos    = @"af_reelpos";
 
-#pragma mark - helpers
+#pragma mark - 崩溃/日志捕获
+
+static NSString * AFCrashLogPath(void) {
+    return [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
+        stringByAppendingPathComponent:@"SoulAutoFish_log.txt"];
+}
+
+void AFWriteLogLine(NSString *s) {
+    @try {
+        NSString *line = [NSString stringWithFormat:@"[%@] %@\n", [NSDate date], s ?: @"(nil)"];
+        NSString *path = AFCrashLogPath();
+        NSFileHandle *h = [NSFileHandle fileHandleForWritingAtPath:path];
+        if (!h) {
+            [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            return;
+        }
+        [h seekToEndOfFile];
+        [h writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+        [h closeFile];
+    } @catch (id e) {}
+}
+
+void AFInstallCrashCapture(void) {
+    NSSetUncaughtExceptionHandler(^(NSException *e) {
+        NSString *s = [NSString stringWithFormat:@"UNCAUGHT EXCEPTION: %@\nreason: %@\nstack:\n%@",
+                       e.name, e.reason, [e.callStackSymbols componentsJoinedByString:@"\n"]];
+        AFWriteLogLine(s);
+    });
+}
+
+/// 动作装甲：异常捕获落盘，不崩
+static void AFSafe(void (^blk)(void)) {
+    @try { blk(); }
+    @catch (NSException *e) {
+        AFWriteLogLine([NSString stringWithFormat:@"CAUGHT %@: %@\nstack:\n%@",
+                        e.name, e.reason, [e.callStackSymbols componentsJoinedByString:@"\n"]]);
+    }
+}
+
+#pragma mark - JS 命令
 
 NSString *AFJSEscape(NSString *s) {
     if (!s) s = @"";
@@ -30,24 +73,7 @@ NSString *AFMakeJSCmd(NSString *name, NSDictionary *arg) {
     return [NSString stringWithFormat:@"window.__autoFish&&window.__autoFish.cmd('%@')", name];
 }
 
-static UIViewController *AFTopViewController(void) {
-    UIWindow *key = nil;
-    for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
-        if ([s isKindOfClass:UIWindowScene.class]) {
-            UIWindowScene *ws = (UIWindowScene *)s;
-            for (UIWindow *w in ws.windows) {
-                if (w.isKeyWindow) { key = w; break; }
-            }
-            if (!key && ws.windows.count) key = ws.windows.firstObject;
-            if (key) break;
-        }
-    }
-    UIViewController *vc = key.rootViewController;
-    while (vc.presentedViewController) vc = vc.presentedViewController;
-    return vc;
-}
-
-#pragma mark - 穿透窗口（标准悬浮窗方案：panel 挂在穿透式根视图内）
+#pragma mark - 穿透窗口（panel 挂在穿透式根视图内）
 
 @interface AFPassthroughView : UIView
 @end
@@ -84,6 +110,13 @@ static UIViewController *AFTopViewController(void) {
 @property (nonatomic, strong) UIButton *setBtn;
 @property (nonatomic, strong) UIButton *minBtn;
 @property (nonatomic, strong) UIView *stateDot;
+// 设置页（面板内嵌，不 present）
+@property (nonatomic, strong) UIView *settingsView;
+@property (nonatomic, strong) UISwitch *autoStartSw;
+@property (nonatomic, strong) UISwitch *autoExpandSw;
+@property (nonatomic, strong) UIButton *spSlowBtn;
+@property (nonatomic, strong) UIButton *spNormBtn;
+@property (nonatomic, strong) UIButton *spFastBtn;
 @property (nonatomic, weak) WKWebView *webview;
 @property (nonatomic, assign) BOOL running;
 @property (nonatomic, copy) NSString *appID;
@@ -91,6 +124,7 @@ static UIViewController *AFTopViewController(void) {
 
 static CGFloat const kPanelW = 224.0;
 static CGFloat const kPanelH = 110.0;
+static CGFloat const kPanelSettingsH = 168.0;
 
 @implementation AutoFishWindow
 
@@ -121,7 +155,18 @@ static CGFloat const kPanelH = 110.0;
     return b;
 }
 
+- (UILabel *)mkLabel:(NSString *)text frame:(CGRect)f color:(UIColor *)c font:(UIFont *)f2 {
+    UILabel *l = [[UILabel alloc] initWithFrame:f];
+    l.text = text;
+    l.textColor = c;
+    l.font = f2;
+    l.userInteractionEnabled = NO;
+    return l;
+}
+
 - (void)buildUI {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+
     self.panel = [[UIView alloc] initWithFrame:CGRectMake(0, 0, kPanelW, kPanelH)];
     self.panel.backgroundColor = [UIColor colorWithWhite:0.06 alpha:0.85];
     self.panel.layer.cornerRadius = 14;
@@ -129,27 +174,27 @@ static CGFloat const kPanelH = 110.0;
     self.panel.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.25].CGColor;
     self.panel.clipsToBounds = YES;
 
-    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 120, 18)];
-    title.text = @"🎣 自动钓鱼";
-    title.textColor = UIColor.whiteColor;
-    title.font = [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
-    [self.panel addSubview:title];
+    [self.panel addSubview:[self mkLabel:@"🎣 自动钓鱼"
+                                  frame:CGRectMake(12, 8, 120, 18)
+                                  color:UIColor.whiteColor
+                                  font:[UIFont systemFontOfSize:13 weight:UIFontWeightBold]]];
 
     self.stateDot = [[UIView alloc] initWithFrame:CGRectMake(kPanelW - 22, 12, 8, 8)];
     self.stateDot.layer.cornerRadius = 4;
     self.stateDot.backgroundColor = [UIColor colorWithWhite:0.6 alpha:1];
+    self.stateDot.userInteractionEnabled = NO;
     [self.panel addSubview:self.stateDot];
 
-    self.statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 28, kPanelW - 24, 15)];
-    self.statusLabel.textColor = [UIColor colorWithRed:0.55 green:0.95 blue:0.65 alpha:1];
-    self.statusLabel.font = [UIFont fontWithName:@"Menlo" size:11];
-    self.statusLabel.text = @"状态:待机";
+    self.statusLabel = [self mkLabel:@"状态:待机"
+                              frame:CGRectMake(12, 28, kPanelW - 24, 15)
+                              color:[UIColor colorWithRed:0.55 green:0.95 blue:0.65 alpha:1]
+                              font:[UIFont fontWithName:@"Menlo" size:11]];
     [self.panel addSubview:self.statusLabel];
 
-    self.logLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 46, kPanelW - 24, 14)];
-    self.logLabel.textColor = [UIColor colorWithWhite:0.72 alpha:1];
-    self.logLabel.font = [UIFont fontWithName:@"Menlo" size:10];
-    self.logLabel.text = @"等待游戏…";
+    self.logLabel = [self mkLabel:@"初始化…"
+                           frame:CGRectMake(12, 46, kPanelW - 24, 14)
+                           color:[UIColor colorWithWhite:0.72 alpha:1]
+                           font:[UIFont fontWithName:@"Menlo" size:10]];
     [self.panel addSubview:self.logLabel];
 
     self.mainBtn  = [self mkBtn:@"启动" color:[UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1] action:@selector(onMain)];
@@ -170,6 +215,51 @@ static CGFloat const kPanelH = 110.0;
 
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
     [self.panel addGestureRecognizer:pan];
+
+    // ---------- 设置页（面板内嵌） ----------
+    self.settingsView = [[UIView alloc] initWithFrame:CGRectMake(0, 26, kPanelW, kPanelSettingsH - 26)];
+    self.settingsView.hidden = YES;
+    [self.panel addSubview:self.settingsView];
+
+    [self.settingsView addSubview:[self mkLabel:@"进入游戏自动启动"
+                                         frame:CGRectMake(12, 8, 140, 20)
+                                         color:UIColor.whiteColor
+                                         font:[UIFont systemFontOfSize:12]]];
+    self.autoStartSw = [[UISwitch alloc] initWithFrame:CGRectMake(kPanelW - 64, 4, 51, 31)];
+    self.autoStartSw.on = [d boolForKey:kAutoStart];
+    [self.autoStartSw addTarget:self action:@selector(onAutoStartSwitch:) forControlEvents:UIControlEventValueChanged];
+    [self.settingsView addSubview:self.autoStartSw];
+
+    [self.settingsView addSubview:[self mkLabel:@"钓鱼浮窗自动展开"
+                                         frame:CGRectMake(12, 40, 140, 20)
+                                         color:UIColor.whiteColor
+                                         font:[UIFont systemFontOfSize:12]]];
+    self.autoExpandSw = [[UISwitch alloc] initWithFrame:CGRectMake(kPanelW - 64, 36, 51, 31)];
+    self.autoExpandSw.on = [d boolForKey:kAutoExpand];
+    [self.autoExpandSw addTarget:self action:@selector(onAutoExpandSwitch:) forControlEvents:UIControlEventValueChanged];
+    [self.settingsView addSubview:self.autoExpandSw];
+
+    [self.settingsView addSubview:[self mkLabel:@"速度"
+                                         frame:CGRectMake(12, 74, 40, 20)
+                                         color:UIColor.whiteColor
+                                         font:[UIFont systemFontOfSize:12]]];
+    self.spSlowBtn = [self mkBtn:@"慢" color:[UIColor colorWithWhite:0.32 alpha:1] action:@selector(onSpeed:)];
+    self.spSlowBtn.tag = 0;
+    self.spSlowBtn.frame = CGRectMake(58, 72, 44, 26);
+    [self.settingsView addSubview:self.spSlowBtn];
+    self.spNormBtn = [self mkBtn:@"中" color:[UIColor colorWithWhite:0.32 alpha:1] action:@selector(onSpeed:)];
+    self.spNormBtn.tag = 1;
+    self.spNormBtn.frame = CGRectMake(108, 72, 44, 26);
+    [self.settingsView addSubview:self.spNormBtn];
+    self.spFastBtn = [self mkBtn:@"快" color:[UIColor colorWithWhite:0.32 alpha:1] action:@selector(onSpeed:)];
+    self.spFastBtn.tag = 2;
+    self.spFastBtn.frame = CGRectMake(158, 72, 44, 26);
+    [self.settingsView addSubview:self.spFastBtn];
+    [self refreshSpeedButtons];
+
+    UIButton *back = [self mkBtn:@"返回" color:[UIColor colorWithRed:0.35 green:0.35 blue:0.40 alpha:1] action:@selector(onCloseSettings)];
+    back.frame = CGRectMake(12, 108, kPanelW - 24, 28);
+    [self.settingsView addSubview:back];
 
     // 收起后的圆点
     self.dotBtn = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -208,7 +298,7 @@ static CGFloat const kPanelH = 110.0;
                 }
             }
             if (!win) win = [[UIWindow alloc] initWithFrame:frame];
-            win.frame = frame; // 显式设置，防止 scene 尺寸未同步
+            win.frame = frame;
             win.windowLevel = UIWindowLevelAlert + 10.0;
             win.backgroundColor = UIColor.clearColor;
             win.userInteractionEnabled = YES;
@@ -230,80 +320,103 @@ static CGFloat const kPanelH = 110.0;
     });
 }
 
-#pragma mark actions
+#pragma mark 主面板动作（全部装甲）
 
 - (void)onPan:(UIPanGestureRecognizer *)g {
-    UIView *sv = self.panel.superview ?: self.overlay;
-    CGPoint t = [g translationInView:sv];
-    CGPoint c = self.panel.center;
-    self.panel.center = CGPointMake(c.x + t.x, c.y + t.y);
-    [g setTranslation:CGPointZero inView:sv];
+    AFSafe(^{
+        UIView *sv = self.panel.superview ?: self.overlay;
+        CGPoint t = [g translationInView:sv];
+        CGPoint c = self.panel.center;
+        self.panel.center = CGPointMake(c.x + t.x, c.y + t.y);
+        [g setTranslation:CGPointZero inView:sv];
+    });
 }
 
 - (void)onMain {
-    if (self.running) [self stopEngine]; else [self startEngine];
+    AFSafe(^{
+        if (self.running) [self stopEngine]; else [self startEngine];
+    });
 }
 
 - (void)onCalib {
-    [self evalJS:AFMakeJSCmd(@"calibrate", nil)];
-    [self addLog:@"校准: 点两个位置"];
+    AFSafe(^{
+        [self evalJS:AFMakeJSCmd(@"calibrate", nil)];
+        [self addLog:@"校准: 点两个位置"];
+    });
 }
 
 - (void)onMinimize {
-    self.panel.hidden = YES;
-    self.dotBtn.hidden = NO;
+    AFSafe(^{
+        self.panel.hidden = YES;
+        self.dotBtn.hidden = NO;
+    });
 }
 
 - (void)onRestore {
-    self.panel.hidden = NO;
-    self.dotBtn.hidden = YES;
+    AFSafe(^{
+        self.panel.hidden = NO;
+        self.dotBtn.hidden = YES;
+    });
 }
+
+#pragma mark 设置页（面板内嵌，无 present）
 
 - (void)onSettings {
-    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
-    BOOL as = [d boolForKey:kAutoStart];
-    BOOL ae = [d boolForKey:kAutoExpand];
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"自动钓鱼设置"
-                                                                message:nil
-                                                         preferredStyle:UIAlertControllerStyleActionSheet];
-    [a addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"进入游戏自动启动：%@", as ? @"开 ✅" : @"关"]
-                                          style:UIAlertActionStyleDefault
-                                        handler:^(UIAlertAction *_) { [d setBool:!as forKey:kAutoStart]; }]];
-    [a addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"钓鱼浮窗自动展开：%@", ae ? @"开 ✅" : @"关"]
-                                          style:UIAlertActionStyleDefault
-                                        handler:^(UIAlertAction *_) { [d setBool:!ae forKey:kAutoExpand]; }]];
-    [a addAction:[UIAlertAction actionWithTitle:@"抛竿速度…"
-                                          style:UIAlertActionStyleDefault
-                                        handler:^(UIAlertAction *_) { [self speedAlert]; }]];
-    [a addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
-    a.popoverPresentationController.sourceView = self.setBtn;
-    UIViewController *top = AFTopViewController();
-    if (top) [top presentViewController:a animated:YES completion:nil];
+    AFSafe(^{
+        self.settingsView.hidden = NO;
+        self.statusLabel.hidden = YES;
+        self.logLabel.hidden = YES;
+        self.mainBtn.hidden = YES;
+        self.calibBtn.hidden = YES;
+        self.setBtn.hidden = YES;
+        self.minBtn.hidden = YES;
+        CGRect f = self.panel.frame;
+        f.size.height = kPanelSettingsH;
+        self.panel.frame = f;
+    });
 }
 
-- (void)speedAlert {
-    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
-    NSInteger cur = [d integerForKey:kSpeed];
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"抛竿速度"
-                                                                message:nil
-                                                         preferredStyle:UIAlertControllerStyleActionSheet];
-    NSArray *names = @[@"慢速（拟人）", @"正常", @"快速（激进）"];
-    for (NSInteger i = 0; i < 3; i++) {
-        NSString *mark = (i == cur) ? @" ✅" : @"";
-        [a addAction:[UIAlertAction actionWithTitle:[names[i] stringByAppendingString:mark]
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *_) {
-                                                [d setInteger:i forKey:kSpeed];
-                                                [self pushConfig];
-                                            }]];
-    }
-    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    a.popoverPresentationController.sourceView = self.setBtn;
-    UIViewController *top = AFTopViewController();
-    if (top) [top presentViewController:a animated:YES completion:nil];
+- (void)onCloseSettings {
+    AFSafe(^{
+        self.settingsView.hidden = YES;
+        self.statusLabel.hidden = NO;
+        self.logLabel.hidden = NO;
+        self.mainBtn.hidden = NO;
+        self.calibBtn.hidden = NO;
+        self.setBtn.hidden = NO;
+        self.minBtn.hidden = NO;
+        CGRect f = self.panel.frame;
+        f.size.height = kPanelH;
+        self.panel.frame = f;
+    });
 }
 
-#pragma mark engine control
+- (void)onAutoStartSwitch:(UISwitch *)s {
+    AFSafe(^{ [NSUserDefaults.standardUserDefaults setBool:s.on forKey:kAutoStart]; });
+}
+
+- (void)onAutoExpandSwitch:(UISwitch *)s {
+    AFSafe(^{ [NSUserDefaults.standardUserDefaults setBool:s.on forKey:kAutoExpand]; });
+}
+
+- (void)onSpeed:(UIButton *)b {
+    AFSafe(^{
+        [NSUserDefaults.standardUserDefaults setInteger:b.tag forKey:kSpeed];
+        [self refreshSpeedButtons];
+        [self pushConfig];
+    });
+}
+
+- (void)refreshSpeedButtons {
+    NSInteger cur = [NSUserDefaults.standardUserDefaults integerForKey:kSpeed];
+    UIColor *sel = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1];
+    UIColor *nor = [UIColor colorWithWhite:0.32 alpha:1];
+    self.spSlowBtn.backgroundColor = (cur == 0) ? sel : nor;
+    self.spNormBtn.backgroundColor = (cur == 1) ? sel : nor;
+    self.spFastBtn.backgroundColor = (cur == 2) ? sel : nor;
+}
+
+#pragma mark 引擎控制
 
 - (void)startEngine {
     if (!self.webview) { [self addLog:@"未检测到游戏窗口"]; return; }
@@ -362,7 +475,7 @@ static CGFloat const kPanelH = 110.0;
     else dispatch_async(dispatch_get_main_queue(), blk);
 }
 
-#pragma mark callbacks
+#pragma mark 回调
 
 - (void)attachWebView:(WKWebView *)wv {
     _webview = wv;
@@ -377,6 +490,7 @@ static CGFloat const kPanelH = 110.0;
 - (void)addLog:(NSString *)msg {
     if (!msg.length) return;
     NSString *m = msg.length > 90 ? [msg substringToIndex:90] : msg;
+    AFWriteLogLine(m);
     dispatch_async(dispatch_get_main_queue(), ^{
         self.logLabel.text = m;
     });
@@ -395,37 +509,41 @@ static CGFloat const kPanelH = 110.0;
     objc_setAssociatedObject(fv, kExpandedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        id delegate = nil;
-        @try { delegate = [fv valueForKey:@"delegate"]; } @catch (id e) {}
-        if (delegate && [delegate respondsToSelector:@selector(fishingFloatViewDidTapExpand:)]) {
-            ((void (*)(id, SEL, id))objc_msgSend)(delegate,
-                @selector(fishingFloatViewDidTapExpand:), fv);
-            [self addLog:@"已自动展开钓鱼浮窗"];
-        }
+        AFSafe(^{
+            id delegate = nil;
+            @try { delegate = [fv valueForKey:@"delegate"]; } @catch (id e) {}
+            if (delegate && [delegate respondsToSelector:@selector(fishingFloatViewDidTapExpand:)]) {
+                ((void (*)(id, SEL, id))objc_msgSend)(delegate,
+                    @selector(fishingFloatViewDidTapExpand:), fv);
+                [self addLog:@"已自动展开钓鱼浮窗"];
+            }
+        });
     });
 }
 
 - (void)userContentController:(WKUserContentController *)ucc
       didReceiveScriptMessage:(WKScriptMessage *)message {
-    NSDictionary *d = (NSDictionary *)message.body;
-    if (![d isKindOfClass:[NSDictionary class]]) return;
-    NSString *ev = d[@"event"];
-    if ([ev isEqualToString:@"stats"]) {
-        NSString *line = [NSString stringWithFormat:@"%@ 抛:%@ 获:%@ 咬:%@",
-                          d[@"state"], d[@"casts"], d[@"catches"], d[@"bites"]];
-        dispatch_async(dispatch_get_main_queue(), ^{ self.statusLabel.text = line; });
-    } else if ([ev isEqualToString:@"calibrated"]) {
-        NSArray *cast = d[@"cast"], *reel = d[@"reel"];
-        if ([cast isKindOfClass:NSArray.class] && cast.count == 2 &&
-            [reel isKindOfClass:NSArray.class] && reel.count == 2) {
-            NSUserDefaults *d2 = NSUserDefaults.standardUserDefaults;
-            [d2 setObject:[NSString stringWithFormat:@"%.3f,%.3f", [cast[0] floatValue], [cast[1] floatValue]] forKey:kCastPos];
-            [d2 setObject:[NSString stringWithFormat:@"%.3f,%.3f", [reel[0] floatValue], [reel[1] floatValue]] forKey:kReelPos];
-            [self addLog:@"校准完成"];
+    AFSafe(^{
+        NSDictionary *d = (NSDictionary *)message.body;
+        if (![d isKindOfClass:[NSDictionary class]]) return;
+        NSString *ev = d[@"event"];
+        if ([ev isEqualToString:@"stats"]) {
+            NSString *line = [NSString stringWithFormat:@"%@ 抛:%@ 获:%@ 咬:%@",
+                              d[@"state"], d[@"casts"], d[@"catches"], d[@"bites"]];
+            dispatch_async(dispatch_get_main_queue(), ^{ self.statusLabel.text = line; });
+        } else if ([ev isEqualToString:@"calibrated"]) {
+            NSArray *cast = d[@"cast"], *reel = d[@"reel"];
+            if ([cast isKindOfClass:NSArray.class] && cast.count == 2 &&
+                [reel isKindOfClass:NSArray.class] && reel.count == 2) {
+                NSUserDefaults *d2 = NSUserDefaults.standardUserDefaults;
+                [d2 setObject:[NSString stringWithFormat:@"%.3f,%.3f", [cast[0] floatValue], [cast[1] floatValue]] forKey:kCastPos];
+                [d2 setObject:[NSString stringWithFormat:@"%.3f,%.3f", [reel[0] floatValue], [reel[1] floatValue]] forKey:kReelPos];
+                [self addLog:@"校准完成"];
+            }
+        } else if ([ev isEqualToString:@"log"]) {
+            [self addLog:d[@"msg"]];
         }
-    } else if ([ev isEqualToString:@"log"]) {
-        [self addLog:d[@"msg"]];
-    }
+    });
 }
 
 #pragma mark props
