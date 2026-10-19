@@ -169,6 +169,7 @@ NSString *AFMakeJSCmd(NSString *name, NSDictionary *arg) {
 @property (nonatomic, strong) AFButton *spFastBtn;
 @property (nonatomic, weak) WKWebView *webview;
 @property (nonatomic, assign) BOOL running;
+@property (nonatomic, assign) BOOL fishingActive;
 @property (nonatomic, copy) NSString *appID;
 @end
 
@@ -529,6 +530,7 @@ static CGFloat const kPanelSettingsH = 168.0;
 }
 
 - (void)onFloatViewShown:(UIView *)fv {
+    _fishingActive = YES; // 钓鱼场景确认（浮窗出现）
     if (![NSUserDefaults.standardUserDefaults boolForKey:kAutoExpand]) return;
     static void *kExpandedKey = &kExpandedKey;
     if (objc_getAssociatedObject(fv, kExpandedKey)) return;
@@ -576,5 +578,6 @@ static CGFloat const kPanelSettingsH = 168.0;
 
 - (BOOL)autoStart  { return [NSUserDefaults.standardUserDefaults boolForKey:kAutoStart]; }
 - (BOOL)autoExpand { return [NSUserDefaults.standardUserDefaults boolForKey:kAutoExpand]; }
+- (BOOL)fishingActive { return _fishingActive; }
 
 @end
