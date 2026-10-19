@@ -1,0 +1,45 @@
+name: Build SoulAutoFish
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dylib
+        run: |
+          set -e
+          cd "${GITHUB_WORKSPACE}"
+          xcrun --sdk iphoneos clang++ \
+            -target arm64-apple-ios14.0 \
+            -dynamiclib \
+            -fobjc-arc \
+            -std=c++17 \
+            -fvisibility=hidden \
+            -O2 \
+            -Wall \
+            -framework Foundation \
+            -framework UIKit \
+            -framework WebKit \
+            -Wl,-install_name,@executable_path/Frameworks/SoulAutoFish.dylib \
+            -o SoulAutoFish.dylib \
+            src/SoulAutoFish.mm \
+            src/AutoFishJS.mm \
+            src/AutoFishWindow.mm
+          codesign --force --sign - --timestamp=none SoulAutoFish.dylib
+          echo "=== build done ==="
+          ls -la SoulAutoFish.dylib
+          lipo -info SoulAutoFish.dylib
+          shasum -a 256 SoulAutoFish.dylib
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SoulAutoFish-dylib
+          path: SoulAutoFish.dylib
+          if-no-files-found: error
