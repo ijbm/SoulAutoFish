@@ -168,6 +168,7 @@ NSString *AFMakeJSCmd(NSString *name, NSDictionary *arg) {
 @property (nonatomic, strong) AFButton *spNormBtn;
 @property (nonatomic, strong) AFButton *spFastBtn;
 @property (nonatomic, weak) WKWebView *webview;
+@property (nonatomic, weak) WKWebView *gameWebview;
 @property (nonatomic, assign) BOOL running;
 @property (nonatomic, assign) BOOL fishingActive;
 @property (nonatomic, copy) NSString *appID;
@@ -446,7 +447,8 @@ static CGFloat const kPanelSettingsH = 168.0;
 #pragma mark 引擎控制
 
 - (void)startEngine {
-    if (!self.webview) { [self addLog:@"未检测到游戏窗口"]; return; }
+    WKWebView *wv = self.gameWebview ?: self.webview;
+    if (!wv) { [self addLog:@"未检测到游戏窗口"]; return; }
     [self pushConfig];
     [self evalJS:AFMakeJSCmd(@"start", nil)];
     self.running = YES;
@@ -495,7 +497,7 @@ static CGFloat const kPanelSettingsH = 168.0;
 }
 
 - (void)evalJS:(NSString *)js {
-    WKWebView *wv = self.webview;
+    WKWebView *wv = self.gameWebview ?: self.webview;
     if (!wv) return;
     void (^blk)(void) = ^{ [wv evaluateJavaScript:js completionHandler:nil]; };
     if ([NSThread isMainThread]) blk();
@@ -506,7 +508,13 @@ static CGFloat const kPanelSettingsH = 168.0;
 
 - (void)attachWebView:(WKWebView *)wv {
     _webview = wv;
-    if (wv) [self addLog:@"游戏视图已连接"];
+    if (wv) [self addLog:@"WebView 已连接"];
+}
+
+- (void)attachGameWebView:(WKWebView *)wv {
+    _gameWebview = wv;
+    _webview = wv;
+    if (wv) [self addLog:@"钓鱼游戏页面确认"];
 }
 
 - (void)setCurrentAppID:(NSString *)appID {
