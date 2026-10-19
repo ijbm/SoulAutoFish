@@ -1,9 +1,9 @@
 // AutoFishWindow.mm
-// 悬浮控制窗 v3：
-//   - 面板内嵌设置页（不 present 任何 VC，避开宿主 VC 生命周期 swizzle）
-//   - 全部按钮动作 @try/@catch 装甲，异常落盘不崩
-//   - 未捕获异常记录器 → Documents/SoulAutoFish_log.txt
-//   - 穿透式根视图标准悬浮窗结构
+// 悬浮控制窗 v4：
+//   - 零 UIControl：自绘 AFButton/AFToggle（纯 UIView + tap 手势），绕开 UIKit focus engine
+//     （v3 崩溃: NSInternalInconsistencyException "targetNode" —— UIControl 触摸触发焦点解析炸 UIKit）
+//   - 面板内嵌设置页、@try 装甲、崩溃捕获落盘（v3 保留）
+//   - 穿透式根视图标准悬浮窗结构（v2 保留）
 #import "AutoFishWindow.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -75,6 +75,79 @@ NSString *AFMakeJSCmd(NSString *name, NSDictionary *arg) {
     return [NSString stringWithFormat:@"window.__autoFish&&window.__autoFish.cmd('%@')", name];
 }
 
+#pragma mark - 自绘控件（零 UIControl，不触发 focus engine）
+
+@interface AFButton : UIView
+@property (nonatomic, copy) void (^onTap)(void);
+- (void)setText:(NSString *)t;
+@end
+
+@implementation AFButton {
+    UILabel *_label;
+}
+- (instancetype)initWithFrame:(CGRect)frame title:(NSString *)title {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.backgroundColor = [UIColor colorWithWhite:0.32 alpha:1];
+        self.layer.cornerRadius = 9;
+        self.userInteractionEnabled = YES;
+        _label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, frame.size.width, frame.size.height)];
+        _label.textAlignment = NSTextAlignmentCenter;
+        _label.textColor = UIColor.whiteColor;
+        _label.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+        _label.adjustsFontSizeToFitWidth = YES;
+        _label.text = title;
+        _label.userInteractionEnabled = NO;
+        [self addSubview:_label];
+        UITapGestureRecognizer *t = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tap)];
+        [self addGestureRecognizer:t];
+    }
+    return self;
+}
+- (void)setText:(NSString *)t { _label.text = t; }
+- (void)tap { if (self.onTap) self.onTap(); }
+@end
+
+@interface AFToggle : UIView
+@property (nonatomic, assign) BOOL on;
+@property (nonatomic, copy) void (^onChange)(BOOL on);
+@end
+
+@implementation AFToggle {
+    UIView *_track;
+    UIView *_knob;
+}
+- (instancetype)initWithFrame:(CGRect)frame on:(BOOL)on {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.userInteractionEnabled = YES;
+        _track = [[UIView alloc] initWithFrame:CGRectMake(0, 2, 51, 31)];
+        _track.layer.cornerRadius = 15.5;
+        [self addSubview:_track];
+        _knob = [[UIView alloc] initWithFrame:CGRectMake(2, 4, 27, 27)];
+        _knob.layer.cornerRadius = 13.5;
+        _knob.backgroundColor = UIColor.whiteColor;
+        [self addSubview:_knob];
+        _on = on;
+        [self render];
+        UITapGestureRecognizer *t = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tap)];
+        [self addGestureRecognizer:t];
+    }
+    return self;
+}
+- (void)render {
+    _track.backgroundColor = _on
+        ? [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1]
+        : [UIColor colorWithWhite:0.35 alpha:1];
+    _knob.frame = CGRectMake(_on ? 22 : 2, 4, 27, 27);
+}
+- (void)tap {
+    _on = !_on;
+    [self render];
+    if (self.onChange) self.onChange(_on);
+}
+@end
+
 #pragma mark - 穿透窗口（panel 挂在穿透式根视图内）
 
 @interface AFPassthroughView : UIView
@@ -104,21 +177,20 @@ NSString *AFMakeJSCmd(NSString *name, NSDictionary *arg) {
 @interface AutoFishWindow ()
 @property (nonatomic, strong) UIWindow *overlay;
 @property (nonatomic, strong) UIView *panel;
-@property (nonatomic, strong) UIButton *dotBtn;
+@property (nonatomic, strong) AFButton *dotBtn;
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic, strong) UILabel *logLabel;
-@property (nonatomic, strong) UIButton *mainBtn;
-@property (nonatomic, strong) UIButton *calibBtn;
-@property (nonatomic, strong) UIButton *setBtn;
-@property (nonatomic, strong) UIButton *minBtn;
+@property (nonatomic, strong) AFButton *mainBtn;
+@property (nonatomic, strong) AFButton *calibBtn;
+@property (nonatomic, strong) AFButton *setBtn;
+@property (nonatomic, strong) AFButton *minBtn;
 @property (nonatomic, strong) UIView *stateDot;
-// 设置页（面板内嵌，不 present）
 @property (nonatomic, strong) UIView *settingsView;
-@property (nonatomic, strong) UISwitch *autoStartSw;
-@property (nonatomic, strong) UISwitch *autoExpandSw;
-@property (nonatomic, strong) UIButton *spSlowBtn;
-@property (nonatomic, strong) UIButton *spNormBtn;
-@property (nonatomic, strong) UIButton *spFastBtn;
+@property (nonatomic, strong) AFToggle *autoStartSw;
+@property (nonatomic, strong) AFToggle *autoExpandSw;
+@property (nonatomic, strong) AFButton *spSlowBtn;
+@property (nonatomic, strong) AFButton *spNormBtn;
+@property (nonatomic, strong) AFButton *spFastBtn;
 @property (nonatomic, weak) WKWebView *webview;
 @property (nonatomic, assign) BOOL running;
 @property (nonatomic, copy) NSString *appID;
@@ -145,15 +217,10 @@ static CGFloat const kPanelSettingsH = 168.0;
 
 #pragma mark UI
 
-- (UIButton *)mkBtn:(NSString *)title color:(UIColor *)c action:(SEL)a {
-    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
-    b.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
-    b.titleLabel.adjustsFontSizeToFitWidth = YES;
-    [b setTitle:title forState:UIControlStateNormal];
-    [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+- (AFButton *)mkBtn:(NSString *)title color:(UIColor *)c frame:(CGRect)f onTap:(void(^)(void))blk {
+    AFButton *b = [[AFButton alloc] initWithFrame:f title:title];
     b.backgroundColor = c;
-    b.layer.cornerRadius = 9;
-    [b addTarget:self action:a forControlEvents:UIControlEventTouchUpInside];
+    b.onTap = blk;
     return b;
 }
 
@@ -199,20 +266,17 @@ static CGFloat const kPanelSettingsH = 168.0;
                            font:[UIFont fontWithName:@"Menlo" size:10]];
     [self.panel addSubview:self.logLabel];
 
-    self.mainBtn  = [self mkBtn:@"启动" color:[UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1] action:@selector(onMain)];
-    self.mainBtn.frame = CGRectMake(12, 68, 58, 32);
+    UIColor *green = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1];
+    UIColor *blue  = [UIColor colorWithRed:0.04 green:0.52 blue:1.0 alpha:1];
+    UIColor *gray  = [UIColor colorWithWhite:0.32 alpha:1];
+
+    self.mainBtn = [self mkBtn:@"启动" color:green frame:CGRectMake(12, 68, 58, 32) onTap:^{ [self onMain]; }];
     [self.panel addSubview:self.mainBtn];
-
-    self.calibBtn = [self mkBtn:@"校准" color:[UIColor colorWithRed:0.04 green:0.52 blue:1.0 alpha:1] action:@selector(onCalib)];
-    self.calibBtn.frame = CGRectMake(76, 68, 50, 32);
+    self.calibBtn = [self mkBtn:@"校准" color:blue frame:CGRectMake(76, 68, 50, 32) onTap:^{ [self onCalib]; }];
     [self.panel addSubview:self.calibBtn];
-
-    self.setBtn = [self mkBtn:@"设置" color:[UIColor colorWithWhite:0.32 alpha:1] action:@selector(onSettings)];
-    self.setBtn.frame = CGRectMake(132, 68, 38, 32);
+    self.setBtn = [self mkBtn:@"设置" color:gray frame:CGRectMake(132, 68, 38, 32) onTap:^{ [self onSettings]; }];
     [self.panel addSubview:self.setBtn];
-
-    self.minBtn = [self mkBtn:@"—" color:[UIColor colorWithWhite:0.32 alpha:1] action:@selector(onMinimize)];
-    self.minBtn.frame = CGRectMake(176, 68, 36, 32);
+    self.minBtn = [self mkBtn:@"—" color:gray frame:CGRectMake(176, 68, 36, 32) onTap:^{ [self onMinimize]; }];
     [self.panel addSubview:self.minBtn];
 
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
@@ -224,55 +288,62 @@ static CGFloat const kPanelSettingsH = 168.0;
     [self.panel addSubview:self.settingsView];
 
     [self.settingsView addSubview:[self mkLabel:@"进入游戏自动启动"
-                                         frame:CGRectMake(12, 8, 140, 20)
+                                         frame:CGRectMake(12, 10, 140, 20)
                                          color:UIColor.whiteColor
                                          font:[UIFont systemFontOfSize:12]]];
-    self.autoStartSw = [[UISwitch alloc] initWithFrame:CGRectMake(kPanelW - 64, 4, 51, 31)];
-    self.autoStartSw.on = [d boolForKey:kAutoStart];
-    [self.autoStartSw addTarget:self action:@selector(onAutoStartSwitch:) forControlEvents:UIControlEventValueChanged];
+    self.autoStartSw = [[AFToggle alloc] initWithFrame:CGRectMake(kPanelW - 66, 6, 54, 35)
+                                                     on:[d boolForKey:kAutoStart]];
+    self.autoStartSw.onChange = ^(BOOL on) {
+        [NSUserDefaults.standardUserDefaults setBool:on forKey:kAutoStart];
+    };
     [self.settingsView addSubview:self.autoStartSw];
 
     [self.settingsView addSubview:[self mkLabel:@"钓鱼浮窗自动展开"
-                                         frame:CGRectMake(12, 40, 140, 20)
+                                         frame:CGRectMake(12, 42, 140, 20)
                                          color:UIColor.whiteColor
                                          font:[UIFont systemFontOfSize:12]]];
-    self.autoExpandSw = [[UISwitch alloc] initWithFrame:CGRectMake(kPanelW - 64, 36, 51, 31)];
-    self.autoExpandSw.on = [d boolForKey:kAutoExpand];
-    [self.autoExpandSw addTarget:self action:@selector(onAutoExpandSwitch:) forControlEvents:UIControlEventValueChanged];
+    self.autoExpandSw = [[AFToggle alloc] initWithFrame:CGRectMake(kPanelW - 66, 38, 54, 35)
+                                                    on:[d boolForKey:kAutoExpand]];
+    self.autoExpandSw.onChange = ^(BOOL on) {
+        [NSUserDefaults.standardUserDefaults setBool:on forKey:kAutoExpand];
+    };
     [self.settingsView addSubview:self.autoExpandSw];
 
     [self.settingsView addSubview:[self mkLabel:@"速度"
-                                         frame:CGRectMake(12, 74, 40, 20)
+                                         frame:CGRectMake(12, 76, 40, 20)
                                          color:UIColor.whiteColor
                                          font:[UIFont systemFontOfSize:12]]];
-    self.spSlowBtn = [self mkBtn:@"慢" color:[UIColor colorWithWhite:0.32 alpha:1] action:@selector(onSpeed:)];
-    self.spSlowBtn.tag = 0;
-    self.spSlowBtn.frame = CGRectMake(58, 72, 44, 26);
+    self.spSlowBtn = [self mkBtn:@"慢" color:gray frame:CGRectMake(58, 74, 44, 26) onTap:^{
+        [NSUserDefaults.standardUserDefaults setInteger:0 forKey:kSpeed];
+        [self refreshSpeedButtons];
+        [self pushConfig];
+    }];
     [self.settingsView addSubview:self.spSlowBtn];
-    self.spNormBtn = [self mkBtn:@"中" color:[UIColor colorWithWhite:0.32 alpha:1] action:@selector(onSpeed:)];
-    self.spNormBtn.tag = 1;
-    self.spNormBtn.frame = CGRectMake(108, 72, 44, 26);
+    self.spNormBtn = [self mkBtn:@"中" color:gray frame:CGRectMake(108, 74, 44, 26) onTap:^{
+        [NSUserDefaults.standardUserDefaults setInteger:1 forKey:kSpeed];
+        [self refreshSpeedButtons];
+        [self pushConfig];
+    }];
     [self.settingsView addSubview:self.spNormBtn];
-    self.spFastBtn = [self mkBtn:@"快" color:[UIColor colorWithWhite:0.32 alpha:1] action:@selector(onSpeed:)];
-    self.spFastBtn.tag = 2;
-    self.spFastBtn.frame = CGRectMake(158, 72, 44, 26);
+    self.spFastBtn = [self mkBtn:@"快" color:gray frame:CGRectMake(158, 74, 44, 26) onTap:^{
+        [NSUserDefaults.standardUserDefaults setInteger:2 forKey:kSpeed];
+        [self refreshSpeedButtons];
+        [self pushConfig];
+    }];
     [self.settingsView addSubview:self.spFastBtn];
     [self refreshSpeedButtons];
 
-    UIButton *back = [self mkBtn:@"返回" color:[UIColor colorWithRed:0.35 green:0.35 blue:0.40 alpha:1] action:@selector(onCloseSettings)];
-    back.frame = CGRectMake(12, 108, kPanelW - 24, 28);
+    AFButton *back = [self mkBtn:@"返回" color:[UIColor colorWithRed:0.35 green:0.35 blue:0.40 alpha:1]
+                         frame:CGRectMake(12, 110, kPanelW - 24, 28) onTap:^{ [self onCloseSettings]; }];
     [self.settingsView addSubview:back];
 
-    // 收起后的圆点
-    self.dotBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-    self.dotBtn.frame = CGRectMake(0, 0, 44, 44);
+    // 收起后的圆点（同样零 UIControl）
+    self.dotBtn = [[AFButton alloc] initWithFrame:CGRectMake(0, 0, 44, 44) title:@"🎣"];
     self.dotBtn.backgroundColor = [UIColor colorWithWhite:0.06 alpha:0.85];
     self.dotBtn.layer.cornerRadius = 22;
     self.dotBtn.layer.borderWidth = 0.5;
     self.dotBtn.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.25].CGColor;
-    self.dotBtn.titleLabel.font = [UIFont systemFontOfSize:20];
-    [self.dotBtn setTitle:@"🎣" forState:UIControlStateNormal];
-    [self.dotBtn addTarget:self action:@selector(onRestore) forControlEvents:UIControlEventTouchUpInside];
+    self.dotBtn.onTap = ^{ [self onRestore]; };
     self.dotBtn.hidden = YES;
 }
 
@@ -300,7 +371,7 @@ static CGFloat const kPanelSettingsH = 168.0;
                 }
             }
             if (!win) win = [[UIWindow alloc] initWithFrame:frame];
-            win.frame = frame;
+            // 注意：scene 窗口的 frame 由 scene 驱动，不手动设置（v3 崩溃嫌疑点之一）
             win.windowLevel = UIWindowLevelAlert + 10.0;
             win.backgroundColor = UIColor.clearColor;
             win.userInteractionEnabled = YES;
@@ -393,22 +464,6 @@ static CGFloat const kPanelSettingsH = 168.0;
     });
 }
 
-- (void)onAutoStartSwitch:(UISwitch *)s {
-    AFSafe(^{ [NSUserDefaults.standardUserDefaults setBool:s.on forKey:kAutoStart]; });
-}
-
-- (void)onAutoExpandSwitch:(UISwitch *)s {
-    AFSafe(^{ [NSUserDefaults.standardUserDefaults setBool:s.on forKey:kAutoExpand]; });
-}
-
-- (void)onSpeed:(UIButton *)b {
-    AFSafe(^{
-        [NSUserDefaults.standardUserDefaults setInteger:b.tag forKey:kSpeed];
-        [self refreshSpeedButtons];
-        [self pushConfig];
-    });
-}
-
 - (void)refreshSpeedButtons {
     NSInteger cur = [NSUserDefaults.standardUserDefaults integerForKey:kSpeed];
     UIColor *sel = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1];
@@ -435,7 +490,7 @@ static CGFloat const kPanelSettingsH = 168.0;
 }
 
 - (void)refreshUI {
-    [self.mainBtn setTitle:(self.running ? @"停止" : @"启动") forState:UIControlStateNormal];
+    [self.mainBtn setText:(self.running ? @"停止" : @"启动")];
     self.mainBtn.backgroundColor = self.running
         ? [UIColor colorWithRed:1.0 green:0.31 blue:0.36 alpha:1]
         : [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1];
