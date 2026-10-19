@@ -72,6 +72,7 @@ static void (*orig_installBridge)(id, SEL, id);
 static void h_installBridge(id self, SEL _cmd, WKWebView *wv) {
     if (orig_installBridge) orig_installBridge(self, _cmd, wv);
     if (!wv) return;
+    [[AutoFishWindow shared] addLog:@"游戏桥已挂载"];
     [[AutoFishWindow shared] attachWebView:wv];
     void (^blk)(void) = ^{ af_inject(wv); };
     if ([NSThread isMainThread]) blk();
@@ -86,6 +87,7 @@ static void h_gameLoaded(id self, SEL _cmd, id args) {
     @try { wv = [self valueForKey:@"wkWebView"]; } @catch (id e) {}
     dispatch_async(dispatch_get_main_queue(), ^{
         if (wv) {
+            [[AutoFishWindow shared] addLog:@"游戏已加载"];
             [[AutoFishWindow shared] attachWebView:wv];
             af_inject(wv);
         }
@@ -238,6 +240,8 @@ __attribute__((constructor)) static void SoulAutoFishEntry(void) {
         if (orig_addSubview) n++;
 
         AFLog(@"%d hooks installed", n);
+        [[AutoFishWindow shared] addLog:[NSString stringWithFormat:@"hooks %d/9 · applets:%@ cf:%@",
+            n, applets ? @"✓" : @"✗", cfvc ? @"✓" : @"✗"]];
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
