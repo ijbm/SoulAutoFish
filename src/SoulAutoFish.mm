@@ -169,8 +169,8 @@ static void h_pageDidFinishNav(id self, SEL _cmd, WKWebView *wv, id nav) {
     if (orig_pageDidFinishNav) orig_pageDidFinishNav(self, _cmd, wv, nav);
     if (!wv) return;
     NSString *url = wv.URL.absoluteString ?: @"";
-    NSString *short = url.length > 70 ? [url substringToIndex:70] : url;
-    [[AutoFishWindow shared] addLog:[NSString stringWithFormat:@"页面: %@", short]];
+    NSString *shortURL = url.length > 70 ? [url substringToIndex:70] : url;
+    [[AutoFishWindow shared] addLog:[NSString stringWithFormat:@"页面: %@", shortURL]];
     [[AutoFishWindow shared] attachWebView:wv];
     if ([NSThread isMainThread]) af_inject(wv);
     else dispatch_async(dispatch_get_main_queue(), ^{ af_inject(wv); });
