@@ -26,6 +26,7 @@ jobs:
             -framework Foundation \
             -framework UIKit \
             -framework WebKit \
+            -framework CoreGraphics \
             -Wl,-install_name,@executable_path/Frameworks/SoulAutoFish.dylib \
             -o SoulAutoFish.dylib \
             src/SoulAutoFish.mm \
