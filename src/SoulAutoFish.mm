@@ -242,7 +242,7 @@ __attribute__((constructor)) static void SoulAutoFishEntry(void) {
         if (orig_addSubview) n++;
 
         AFLog(@"%d hooks installed", n);
-        [[AutoFishWindow shared] addLog:[NSString stringWithFormat:@"hooks %d/9 · applets:%@ cf:%@",
+        [[AutoFishWindow shared] addLog:[NSString stringWithFormat:@"hooks %d/9 · applets:%@ cf:%@ [v5-smallwin]",
             n, applets ? @"✓" : @"✗", cfvc ? @"✓" : @"✗"]];
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
