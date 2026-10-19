@@ -326,31 +326,16 @@ static CGFloat const kPanelSettingsH = 168.0;
 - (void)show {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!self.overlay) {
-            UIWindowScene *ws = nil;
-            for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
-                if ([s isKindOfClass:UIWindowScene.class] &&
-                    s.activationState == UISceneActivationStateForegroundActive) {
-                    ws = (UIWindowScene *)s; break;
-                }
-            }
-            if (!ws) {
-                for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
-                    if ([s isKindOfClass:UIWindowScene.class]) { ws = (UIWindowScene *)s; break; }
-                }
-            }
+            // v6: Soul 无 scene manifest（老式 AppDelegate），宿主窗口全是
+            // initWithFrame: 无 scene 建的。带 scene 的窗口在无 scene app 里
+            // 会破坏 UIKit 事件节点图（触摸路由 targetNode 断言）。
+            // 跟宿主完全同构：纯 initWithFrame，不碰 scene。
             CGRect sf = UIScreen.mainScreen.bounds;
-            UIWindow *win = nil;
-            if (@available(iOS 13.0, *)) {
-                if (ws) win = [[UIWindow alloc] initWithWindowScene:ws];
-            }
-            // v5: 小窗口方案 —— 窗口=面板大小（同系统键盘窗原理）
-            // 无穿透视图/无自定义类/无 hitTest 覆写，窗口外触摸天然穿不到
             CGRect pf = CGRectMake(sf.size.width - kPanelW - 10, 100, kPanelW, kPanelH);
-            if (!win) win = [[UIWindow alloc] initWithFrame:pf];
+            UIWindow *win = [[UIWindow alloc] initWithFrame:pf];
             win.windowLevel = UIWindowLevelAlert + 10.0;
-            win.frame = pf;
             win.backgroundColor = UIColor.clearColor;
-            win.rootViewController = [UIViewController new]; // 纯系统 VC
+            win.rootViewController = [UIViewController new];
             win.rootViewController.view.backgroundColor = UIColor.clearColor;
             [win.rootViewController.view addSubview:self.panel];
             [win.rootViewController.view addSubview:self.dotBtn];
