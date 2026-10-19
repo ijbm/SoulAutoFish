@@ -324,7 +324,7 @@ __attribute__((constructor)) static void SoulAutoFishEntry(void) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [[AutoFishWindow shared] addLog:[NSString stringWithFormat:
-                @"hooks %d/12 · applets:%@ cf:%@ [v12-binary]", n, appletsOK, cfOK]];
+                @"hooks %d/12 · applets:%@ cf:%@ [v13-strikehold]", n, appletsOK, cfOK]];
             [[AutoFishWindow shared] show];
         });
     }
