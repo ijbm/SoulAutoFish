@@ -115,6 +115,9 @@ function onServerMsg(data) {
     function WS(url, protos) {
         var ws = (protos !== undefined) ? new OW(url, protos) : new OW(url);
         try {
+            ws.addEventListener('open', function () { log('WS已连接: ' + String(url).slice(0, 60)); });
+            ws.addEventListener('error', function () { log('WS错误: ' + String(url).slice(0, 60)); });
+            ws.addEventListener('close', function () { log('WS关闭: ' + String(url).slice(0, 60)); });
             ws.addEventListener('message', function (ev) {
                 try { onServerMsg(ev.data); } catch (e) {}
             });
@@ -122,6 +125,13 @@ function onServerMsg(data) {
         return ws;
     }
     try { WS.prototype = OW.prototype; } catch (e) {}
+    // 关键修复: 复制全部静态常量 (OPEN/CONNECTING/CLOSING/CLOSED...)
+    // v9 漏了这步 → 游戏读 WebSocket.OPEN 拿到 undefined → 连接状态机崩 → "网络不稳定"
+    try {
+        Object.getOwnPropertyNames(OW).forEach(function (k) {
+            if (!(k in WS)) { try { WS[k] = OW[k]; } catch (e) {} }
+        });
+    } catch (e) {}
     WS.__afHooked = true;
     window.WebSocket = WS;
 })();
@@ -200,7 +210,9 @@ async function mainLoop() {
             AF.state = 'waiting';
             AF.lastCast = Date.now();
             AF.stats.casts++;
+            var el = gameTarget();
             tapNorm(AF.cfg.castPos[0], AF.cfg.castPos[1]);
+            log('抛竿→' + (el.tagName || '?') + ' ' + Math.round(AF.cfg.castPos[0] * 100) + '%,' + Math.round(AF.cfg.castPos[1] * 100) + '%');
             report();
         } else if (AF.state === 'waiting' && Date.now() - AF.lastCast > AF.cfg.recastTimeout) {
             AF.state = 'idle';
